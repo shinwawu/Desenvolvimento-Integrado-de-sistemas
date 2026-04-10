@@ -1,0 +1,11 @@
+[project]
+name = "desenvolvimento-integrado-de-sistemas"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.4.3",
+    "pandas>=3.0.1",
+    "scipy>=1.17.1",
+]

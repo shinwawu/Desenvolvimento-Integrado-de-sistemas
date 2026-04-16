@@ -1,0 +1,5 @@
+C:\Users\858418\projects\Desenvolvimento-Integrado-de-sistemas\hello\target\debug\deps\hello.d: src\main.rs
+
+C:\Users\858418\projects\Desenvolvimento-Integrado-de-sistemas\hello\target\debug\deps\hello.exe: src\main.rs
+
+src\main.rs:

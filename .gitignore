@@ -1,3 +1,6 @@
 /target
 DIS
 data/H-2.csv
+.venv
+__pycache__
+data/H-2-dense.npz

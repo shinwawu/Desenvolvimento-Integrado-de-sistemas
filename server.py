@@ -11,6 +11,9 @@ import scipy.sparse as sp
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, ORJSONResponse
 from pydantic import BaseModel
+#TODO:
+# task 1: arrumar o ganho de sinal que tem o significado errado, ela tem a ver com o brilho do sinal
+# task 2: normalizar para o absoluto antes de converter para escala de cinza, para evitar que o brilho do sinal afete a escala de cinza da imagem reconstruida
 
 
 # Configurações dos modelos disponíveis
@@ -24,30 +27,37 @@ MODELS: dict = {}
 # salva os chunks de sinais g enviados pelos clientes
 CLIENT_SIGNALS: dict = {}
 
-# ---- controle de saturacao ----
-# limite de reconstrucoes simultaneas: BLAS multi-thread aproveita os cores, mas
-# competir cache em N threads piora throughput; cpu_count() * 2 e um teto seguro
-MAX_INFLIGHT = max(2, (os.cpu_count() or 4) * 2)
-# fila e ilimitada por contagem (requisito: suportar muitos usuarios simultaneos).
-# o unico motivo para rejeitar e proteger o servidor de OOM: se a memoria
-# disponivel cair abaixo deste piso, novas requisicoes recebem 503.
-MIN_AVAILABLE_GB = 0.5        # piso abaixo do qual o request espera (nao rejeita)
-MEMORY_WAIT_DEADLINE_S = 300  # so rejeita em ultimo caso, depois de 5 min esperando
-MEMORY_POLL_S = 0.5           # frequencia de re-checagem da memoria
-RECON_TIMEOUT_S = 30.0
-CLIENT_SIGNALS_TTL_S = 60.0  # buffers inativos sao descartados depois disso
-GC_INTERVAL_S = 10.0
+# 
+# 
+# variavel que controla o numero de requests q podem ser processados simultaneamente 
+MAX_REQUEST = max(2, (os.cpu_count() or 4) * 2)
 
-inflight_sem = asyncio.Semaphore(MAX_INFLIGHT)
-metrics_state = {
-    "inflight": 0,
-    "queued": 0,
-    "completed": 0,
-    "rejected": 0,
-    "memory_waited": 0,
+# controle de memoria para que o servidor nao fique sobrecarregado
+MEMO_MINIMA = 0.5        # piso abaixo do qual o request espera (nao rejeita)
+TEMPO_DE_ESPERA = 300  # so rejeita em ultimo caso, depois de 5 min esperando
+# essa variavel serve para controlar a frequencia de re-checagem da memoria durante a espera p evitar deadlock
+TEMPO_VERIFICACAO = 0.5           
+
+# tempo maximo p reconstrucao d img
+TEMPO_CONSTRUCAO = 30.0
+# essa variavel e o tempo de vida do buffer de sinais dos clientes
+TEMPO_VIDA = 60.0   # buffers inativos sao descartados depois disso
+
+#serve p controlar a frequencia de buffer ocioso dos clientes, evitando vazamento de memoria sob carga
+# essa variavel serve para controlar a frequencia de re-checagem dos buffers ociosos
+FREQ_VERIFY = 10.0
+
+# serve p controlar a concorrencia de requests
+request_max = asyncio.Semaphore(MAX_REQUEST)
+metricas = {
+    "no_processo": 0,
+    "na_fila": 0,
+    "completos": 0,
+    "rejeitados": 0,
+    "esperando_memo": 0,
     "timeout": 0,
-    "failed": 0,
-    "gc_evicted": 0,
+    "falha": 0,
+    "buffer_remo": 0,
     "times_ms": deque(maxlen=500),
 }
 
@@ -75,29 +85,34 @@ def load_model(model_id: str, cfg: dict) -> dict:
     return {"H": H, "Ht": Ht, "shape": cfg["shape"], "S": cfg["S"], "N": cfg["N"]}
 
 
-# GC dos buffers ociosos em CLIENT_SIGNALS para evitar vazamento sob carga
-async def client_signals_gc():
+# coletor d lixo dos buffers de sinais dos clientes
+# remove os buffers que estao inativos (nao recebendo partes novas) por mais de TEMPO_VIDA segundos, para evitar vazamento de memoria sob carga
+async def sinais_clientes_lixo():
+    """"
+    ela verifica os buffers dos clientes a cada instantes e remove os inativos
+    """
     while True:
-        await asyncio.sleep(GC_INTERVAL_S)
+        await asyncio.sleep(FREQ_VERIFY)
         try:
-            cutoff = time.monotonic() - CLIENT_SIGNALS_TTL_S
-            stale = [
+            corte = time.monotonic() - TEMPO_VIDA
+            
+            inativos = [
                 cid
                 for cid, v in CLIENT_SIGNALS.items()
                 if isinstance(v, dict)
-                and v.get("last_touched", 0) < cutoff
+                and v.get("last_touched", 0) < corte
                 and not v.get("complete", False)
             ]
-            for cid in stale:
+            for cid in inativos:
                 CLIENT_SIGNALS.pop(cid, None)
-            if stale:
-                metrics_state["gc_evicted"] += len(stale)
-                print(f"[gc] removidos {len(stale)} buffers ociosos", flush=True)
+            if inativos:
+                metricas["buffer_remo"] += len(inativos)
+                print(f"[coletor lixo] removidos {len(inativos)} buffers ociosos", flush=True)
         except Exception as e:
-            print(f"[gc] erro: {e}", flush=True)
+            print(f"[coletor lixo] erro: {e}", flush=True)
 
 
-# monitor de memoria: imprime uso/disponibilidade do sistema a cada 1s
+# monitor de memoria, q verifica a memoria do sistema e do processo e printa 
 async def memoria_monitor(intervalo_s: float = 2.0):
     GB = 1024**3
     processo = psutil.Process()
@@ -120,13 +135,17 @@ async def memoria_monitor(intervalo_s: float = 2.0):
 # gerencia o ciclo de vida do app, e carrega os modelos ao iniciar e limpa ao finalizar
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    inicia o server, carrega o modelo e inicia as tarefas de monitoramento de memoria e coleta de lixo dos buffers dos clientes.
+    quando o server for finalizado, cancela as tarefas e limpa os modelos da memoria.
+    """
     for mid, cfg in MODELS_CONFIG.items():
         model = load_model(mid, cfg)
         if model is not None:
             MODELS[mid] = model
     # tasks em background: monitor de memoria + GC de buffers ociosos
     monitor_task = asyncio.create_task(memoria_monitor())
-    gc_task = asyncio.create_task(client_signals_gc())
+    gc_task = asyncio.create_task(sinais_clientes_lixo())
     yield
     for t in (monitor_task, gc_task):
         t.cancel()
@@ -140,7 +159,7 @@ async def lifespan(app: FastAPI):
 # cria a instancia do fastapi
 # definindo o ciclo de vida do app para carregar os modelos ao iniciar e limpar ao finalizar
 # optamos por usar ORJSONResponse para melhorar a performance na serialização de respostas JSON
-app = FastAPI(lifespan=lifespan, default_response_class=ORJSONResponse)
+app = FastAPI(lifespan=lifespan)
 
 
 # função de reconstrucao usando o metodo CGNR
@@ -242,11 +261,17 @@ class Sinal(BaseModel):
 
 
 # recebe os chunks de g. No chunk final (complete=True), executa a reconstrucao
-# de forma sincrona protegida por semaphore (admission control) + memoria.
+
 @app.post("/reconstruct/{model_id}")
 async def reconstruct(
     cliente_id: str, algorithm: str, model_id: str, sinal: Sinal, complete: bool = False
 ):
+    """
+    Recebe os chunks do sinal g e armazena no buffer do cliente.
+    e espera ate processo se repete ate o chunk final (complete=True).
+     
+     No chunk final, executa a reconstrução da imagem usando o algoritmo escolhido e retorna a imagem reconstruida e as metricas de desempenho.
+    """
     if CLIENT_SIGNALS.get(cliente_id) is None:
         CLIENT_SIGNALS[cliente_id] = {
             "algorithm": algorithm,
@@ -267,83 +292,82 @@ async def reconstruct(
             "error": f"modelo '{model_id}' não encontrado. segue os modelos disponiveis: {list(MODELS.keys())}"
         }
 
-    # admission control por pressao de memoria: nao rejeita por padrao -- espera
-    # ate a memoria aliviar (workers vao terminando e liberando). so rejeita em
-    # ultimo caso, se a espera passar de MEMORY_WAIT_DEADLINE_S (proteção contra
-    # deadlock em OOM real).
+    # realizamos o gerenciamento de processosamento e controle de memoria aqui, 
+    # antes de iniciar a reconstrução, para evitar sobrecarga do servidor e garantir que o processo de reconstrução tenha recursos suficientes para ser concluído com sucesso.
     GB = 1024 ** 3
-    if psutil.virtual_memory().available < MIN_AVAILABLE_GB * GB:
-        metrics_state["memory_waited"] += 1
-        espera_deadline = time.monotonic() + MEMORY_WAIT_DEADLINE_S
-        while psutil.virtual_memory().available < MIN_AVAILABLE_GB * GB:
+    if psutil.virtual_memory().available < MEMO_MINIMA * GB:
+        metricas["esperando_memo"] += 1
+        espera_deadline = time.monotonic() + TEMPO_DE_ESPERA
+        while psutil.virtual_memory().available < MEMO_MINIMA * GB:
             if time.monotonic() > espera_deadline:
-                metrics_state["rejected"] += 1
+                metricas["rejeitados"] += 1
                 return JSONResponse(
                     status_code=503,
                     content={
                         "error": (
-                            f"memoria abaixo de {MIN_AVAILABLE_GB}GB por mais de "
-                            f"{MEMORY_WAIT_DEADLINE_S}s; rejeitando para evitar deadlock"
+                            f"memoria abaixo de {MEMO_MINIMA}GB por mais de "
+                            f"{TEMPO_DE_ESPERA}s; rejeitando para evitar deadlock"
                         )
                     },
                 )
-            await asyncio.sleep(MEMORY_POLL_S)
+            await asyncio.sleep(TEMPO_VERIFICACAO)
 
+    # aqui construimos o array do cliente e escolhemos o algoritmo
     g = np.asarray(CLIENT_SIGNALS[cliente_id]["g_parts"], dtype=np.float32)
     algo_choice = CLIENT_SIGNALS[cliente_id]["algorithm"]
     # libera o buffer antes da reconstrucao para reduzir pico de RAM
     CLIENT_SIGNALS[cliente_id]["g_parts"] = []
     CLIENT_SIGNALS[cliente_id]["complete"] = False
 
-    metrics_state["queued"] += 1
+    metricas["na_fila"] += 1
     try:
-        async with inflight_sem:
-            metrics_state["queued"] -= 1
-            metrics_state["inflight"] += 1
+        async with request_max:
+            metricas["na_fila"] -= 1
+            metricas["no_processo"] += 1
             try:
                 start_dt = datetime.now()
                 t0 = time.perf_counter()
                 result = await asyncio.wait_for(
                     asyncio.to_thread(reconstruct_image, algo_choice, model_id, g),
-                    timeout=RECON_TIMEOUT_S,
+                    timeout=TEMPO_CONSTRUCAO,
                 )
                 elapsed = time.perf_counter() - t0
                 end_dt = datetime.now()
             except asyncio.TimeoutError:
-                metrics_state["timeout"] += 1
+                metricas["timeout"] += 1
                 return JSONResponse(
                     status_code=504,
-                    content={"error": f"timeout > {RECON_TIMEOUT_S}s na reconstrução"},
+                    content={"error": f"timeout > {TEMPO_CONSTRUCAO}s na reconstrução"},
                 )
             except Exception as e:
-                metrics_state["failed"] += 1
+                metricas["falha"] += 1
                 return {"error": f"erro na reconstrução da imagem: {str(e)}"}
             finally:
-                metrics_state["inflight"] -= 1
+                metricas["no_processo"] -= 1
     except Exception:
-        if metrics_state["queued"] > 0:
-            metrics_state["queued"] -= 1
+        if metricas["na_fila"] > 0:
+            metricas["na_fila"] -= 1
         raise
 
     if isinstance(result, dict) and "error" in result:
-        metrics_state["failed"] += 1
+        metricas["falha"] += 1
         return {"error": f"erro na reconstrução da imagem: {result['error']}"}
 
     img, iters, err = result
-    metrics_state["completed"] += 1
-    metrics_state["times_ms"].append(elapsed * 1000)
+    metricas["completos"] += 1
+    metricas["times_ms"].append(elapsed * 1000)
 
     return {
         "message": f"reconstrucao completa para {model_id}",
         "image": img.tolist(),
         "iters": iters,
-        "final_error": err,
-        "reconstruction_time": elapsed,
-        "start_time": start_dt.isoformat(timespec="milliseconds"),
-        "end_time": end_dt.isoformat(timespec="milliseconds"),
+        "erro_final": err,
+        "tempo_reconstrucao": elapsed,
+        "tempo_inicio": start_dt.isoformat(timespec="milliseconds"),
+        "tempo_fim": end_dt.isoformat(timespec="milliseconds"),
     }
 
-
+# funcao que calcula o percentil p de uma lista de valores ordenados, retornando None se a lista estiver vazia
 def _percentile(sorted_values: list[float], p: float) -> float | None:
     if not sorted_values:
         return None
@@ -352,34 +376,33 @@ def _percentile(sorted_values: list[float], p: float) -> float | None:
     return sorted_values[k]
 
 
-@app.get("/metrics")
-async def metrics():
-    times = sorted(metrics_state["times_ms"])
+def metrics():
+    times = sorted(metricas["times_ms"])
     vm = psutil.virtual_memory()
     GB = 1024**3
     return {
         "limits": {
-            "max_inflight": MAX_INFLIGHT,
+            "MAX_REQUEST": MAX_REQUEST,
             "queue_policy": (
                 "unbounded; wait until memory recovers (no reject by count); "
-                "last-resort reject only after memory_wait_deadline_s"
+                "last-resort reject only after TEMPO_DE_ESPERA"
             ),
-            "min_available_gb": MIN_AVAILABLE_GB,
-            "memory_wait_deadline_s": MEMORY_WAIT_DEADLINE_S,
-            "recon_timeout_s": RECON_TIMEOUT_S,
-            "client_buffer_ttl_s": CLIENT_SIGNALS_TTL_S,
+            "MEMO_MINIMA": MEMO_MINIMA,
+            "TEMPO_DE_ESPERA": TEMPO_DE_ESPERA,
+            "TEMPO_CONSTRUCAO": TEMPO_CONSTRUCAO,
+            "client_buffer_ttl_s": TEMPO_VIDA,
         },
         "counters": {
-            "completed": metrics_state["completed"],
-            "rejected": metrics_state["rejected"],
-            "memory_waited": metrics_state["memory_waited"],
-            "timeout": metrics_state["timeout"],
-            "failed": metrics_state["failed"],
-            "gc_evicted": metrics_state["gc_evicted"],
+            "completos": metricas["completos"],
+            "rejeitados": metricas["rejeitados"],
+            "esperando_memo": metricas["esperando_memo"],
+            "timeout": metricas["timeout"],
+            "falha": metricas["falha"],
+            "buffer_remo": metricas["buffer_remo"],
         },
         "gauges": {
-            "inflight": metrics_state["inflight"],
-            "queued": metrics_state["queued"],
+            "no_processo": metricas["no_processo"],
+            "na_fila": metricas["na_fila"],
             "client_buffers": sum(
                 1
                 for v in CLIENT_SIGNALS.values()

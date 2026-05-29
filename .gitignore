@@ -6,3 +6,4 @@ __pycache__
 data/H-2-dense.npz
 data/H1.npz
 data/H1.csv
+data/H1-dense.npz

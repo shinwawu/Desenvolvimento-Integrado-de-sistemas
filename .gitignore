@@ -4,6 +4,6 @@ data/H-2.csv
 .venv
 __pycache__
 data/H-2-dense.npz
-data/H1.npz
-data/H1.csv
-data/H1-dense.npz
+data/H-1.npz
+data/-1.csv
+data/-1-dense.npz

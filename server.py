@@ -246,6 +246,7 @@ def reconstruct_image(algorithm: str, model_id: str, g: np.ndarray) -> np.ndarra
         return {"error": f"algoritmo '{algorithm}' não suportado"}
     print(f"reconstrução {model_id} completa: iters={iters}, erro final={err:.6f}")
     # reshape a imagem para o formato original usando ordem 'F' (coluna principal) para garantir a correspondência correta dos pixels
+    f = abs(f)  # normaliza para o absoluto antes de converter para escala de cinza, para evitar que o brilho do sinal afete a escala de cinza da imagem reconstruida
     img = f.reshape(m["shape"], order="F")
 
     lo, hi = float(img.min()), float(img.max())

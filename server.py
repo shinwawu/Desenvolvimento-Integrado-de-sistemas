@@ -11,7 +11,8 @@ import scipy.sparse as sp
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, ORJSONResponse
 from pydantic import BaseModel
-#TODO:
+
+# TODO:
 # task 1: arrumar o ganho de sinal que tem o significado errado, ela tem a ver com o brilho do sinal
 # task 2: normalizar para o absoluto antes de converter para escala de cinza, para evitar que o brilho do sinal afete a escala de cinza da imagem reconstruida
 
@@ -27,23 +28,23 @@ MODELS: dict = {}
 # salva os chunks de sinais g enviados pelos clientes
 CLIENT_SIGNALS: dict = {}
 
-# 
-# 
-# variavel que controla o numero de requests q podem ser processados simultaneamente 
+#
+#
+# variavel que controla o numero de requests q podem ser processados simultaneamente
 MAX_REQUEST = max(2, (os.cpu_count() or 4) * 2)
 
 # controle de memoria para que o servidor nao fique sobrecarregado
-MEMO_MINIMA = 0.5        # piso abaixo do qual o request espera (nao rejeita)
+MEMO_MINIMA = 0.5  # piso abaixo do qual o request espera (nao rejeita)
 TEMPO_DE_ESPERA = 300  # so rejeita em ultimo caso, depois de 5 min esperando
 # essa variavel serve para controlar a frequencia de re-checagem da memoria durante a espera p evitar deadlock
-TEMPO_VERIFICACAO = 0.5           
+TEMPO_VERIFICACAO = 0.5
 
 # tempo maximo p reconstrucao d img
 TEMPO_CONSTRUCAO = 30.0
 # essa variavel e o tempo de vida do buffer de sinais dos clientes
-TEMPO_VIDA = 60.0   # buffers inativos sao descartados depois disso
+TEMPO_VIDA = 60.0  # buffers inativos sao descartados depois disso
 
-#serve p controlar a frequencia de buffer ocioso dos clientes, evitando vazamento de memoria sob carga
+# serve p controlar a frequencia de buffer ocioso dos clientes, evitando vazamento de memoria sob carga
 # essa variavel serve para controlar a frequencia de re-checagem dos buffers ociosos
 FREQ_VERIFY = 10.0
 
@@ -88,14 +89,14 @@ def load_model(model_id: str, cfg: dict) -> dict:
 # coletor d lixo dos buffers de sinais dos clientes
 # remove os buffers que estao inativos (nao recebendo partes novas) por mais de TEMPO_VIDA segundos, para evitar vazamento de memoria sob carga
 async def sinais_clientes_lixo():
-    """"
+    """ "
     ela verifica os buffers dos clientes a cada instantes e remove os inativos
     """
     while True:
         await asyncio.sleep(FREQ_VERIFY)
         try:
             corte = time.monotonic() - TEMPO_VIDA
-            
+
             inativos = [
                 cid
                 for cid, v in CLIENT_SIGNALS.items()
@@ -107,12 +108,15 @@ async def sinais_clientes_lixo():
                 CLIENT_SIGNALS.pop(cid, None)
             if inativos:
                 metricas["buffer_remo"] += len(inativos)
-                print(f"[coletor lixo] removidos {len(inativos)} buffers ociosos", flush=True)
+                print(
+                    f"[coletor lixo] removidos {len(inativos)} buffers ociosos",
+                    flush=True,
+                )
         except Exception as e:
             print(f"[coletor lixo] erro: {e}", flush=True)
 
 
-# monitor de memoria, q verifica a memoria do sistema e do processo e printa 
+# monitor de memoria, q verifica a memoria do sistema e do processo e printa
 async def memoria_monitor(intervalo_s: float = 2.0):
     GB = 1024**3
     processo = psutil.Process()
@@ -246,7 +250,9 @@ def reconstruct_image(algorithm: str, model_id: str, g: np.ndarray) -> np.ndarra
         return {"error": f"algoritmo '{algorithm}' não suportado"}
     print(f"reconstrução {model_id} completa: iters={iters}, erro final={err:.6f}")
     # reshape a imagem para o formato original usando ordem 'F' (coluna principal) para garantir a correspondência correta dos pixels
-    f = abs(f)  # normaliza para o absoluto antes de converter para escala de cinza, para evitar que o brilho do sinal afete a escala de cinza da imagem reconstruida
+    f = abs(
+        f
+    )  # normaliza para o absoluto antes de converter para escala de cinza, para evitar que o brilho do sinal afete a escala de cinza da imagem reconstruida
     img = f.reshape(m["shape"], order="F")
 
     lo, hi = float(img.min()), float(img.max())
@@ -263,6 +269,7 @@ class Sinal(BaseModel):
 
 # recebe os chunks de g. No chunk final (complete=True), executa a reconstrucao
 
+
 @app.post("/reconstruct/{model_id}")
 async def reconstruct(
     cliente_id: str, algorithm: str, model_id: str, sinal: Sinal, complete: bool = False
@@ -270,7 +277,7 @@ async def reconstruct(
     """
     Recebe os chunks do sinal g e armazena no buffer do cliente.
     e espera ate processo se repete ate o chunk final (complete=True).
-     
+
      No chunk final, executa a reconstrução da imagem usando o algoritmo escolhido e retorna a imagem reconstruida e as metricas de desempenho.
     """
     if CLIENT_SIGNALS.get(cliente_id) is None:
@@ -293,9 +300,9 @@ async def reconstruct(
             "error": f"modelo '{model_id}' não encontrado. segue os modelos disponiveis: {list(MODELS.keys())}"
         }
 
-    # realizamos o gerenciamento de processosamento e controle de memoria aqui, 
+    # realizamos o gerenciamento de processosamento e controle de memoria aqui,
     # antes de iniciar a reconstrução, para evitar sobrecarga do servidor e garantir que o processo de reconstrução tenha recursos suficientes para ser concluído com sucesso.
-    GB = 1024 ** 3
+    GB = 1024**3
     if psutil.virtual_memory().available < MEMO_MINIMA * GB:
         metricas["esperando_memo"] += 1
         espera_deadline = time.monotonic() + TEMPO_DE_ESPERA
@@ -367,6 +374,7 @@ async def reconstruct(
         "tempo_inicio": start_dt.isoformat(timespec="milliseconds"),
         "tempo_fim": end_dt.isoformat(timespec="milliseconds"),
     }
+
 
 # funcao que calcula o percentil p de uma lista de valores ordenados, retornando None se a lista estiver vazia
 def _percentile(sorted_values: list[float], p: float) -> float | None:

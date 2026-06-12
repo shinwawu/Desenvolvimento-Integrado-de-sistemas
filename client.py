@@ -35,6 +35,20 @@ sinais = {
 }
 
 
+def aplicar_ganho_sinal(g: np.ndarray) -> np.ndarray:
+    """Correcao de atenuacao por posicao (ganho de sinal / brilho):
+
+        g[l] = g[l] * (100 + (l/20) * sqrt(l)) / 100
+
+    onde l e o indice 1-based da amostra. Amplifica as amostras finais para
+    compensar a atenuacao do sinal recebido, aumentando o brilho dos pixels
+    correspondentes na imagem reconstruida.
+    """
+    l = np.arange(1, len(g) + 1, dtype=np.float64)
+    fator = (100.0 + (l / 20.0) * np.sqrt(l)) / 100.0
+    return g * fator
+
+
 # cada cliente envia a mesma sequencia de g para ambos os algoritmos
 async def enviar_sequencia(
     cliente_id: str, algorithm: str, model_id: str, partes: list[np.ndarray]
@@ -94,79 +108,79 @@ def salvar_imagem(
     plt.close(fig)
 
 
-# inicializa o cliente, seleciona imagem e ganho aleatorios, divide o sinal em partes, envia para ambos os algoritmos e registra os resultados
+# cada cliente sorteia 1 imagem, 1 algoritmo, e decide aleatoriamente se aplica
+# a correcao de ganho (brilho) antes de enviar
 async def inicializar_cliente(client_id: int):
     img_random = random.randint(1, 6)
-    gain = round(random.uniform(0.5, 1.5), 4)
+    algo_random = random.choice(algorithms)
+    aplicar_ganho = random.choice([True, False])
     value = imagem_modelo[img_random]
     print(
-        f"[client {client_id}] img={img_random} gain={gain} model={value['model_id']}"
+        f"[client {client_id}] img={img_random} algo={algo_random} "
+        f"ganho={'sim' if aplicar_ganho else 'nao'} model={value['model_id']}"
     )
 
-    # ganho aplicado antes do split, e o split e o MESMO para os dois algoritmos
-    sinal = sinais[img_random] * gain
+    g = sinais[img_random]
+    if aplicar_ganho:
+        g = aplicar_ganho_sinal(g)
     n_parts = int(np.random.randint(1, 10))
-    partes = np.array_split(sinal, n_parts)
+    partes = np.array_split(g, n_parts)
 
-    # mesma sequencia de g enviada em paralelo para CGNR e CGNE
-    tasks = [
-        enviar_sequencia(f"{client_id}-{algo}", algo, value["model_id"], partes)
-        for algo in algorithms
-    ]
-    results = await asyncio.gather(*tasks)
+    response = await enviar_sequencia(
+        str(client_id), algo_random, value["model_id"], partes
+    )
 
-    for algo, response in zip(algorithms, results):
-        if not isinstance(response, dict):
-            print(f"[client {client_id}-{algo}] sem resposta")
-            continue
-        if "error" in response:
-            print(f"[client {client_id}-{algo}] falha no servidor: {response['error']}")
-            continue
-        img_data = response.get("image")
-        if img_data is None:
-            print(f"[client {client_id}-{algo}] resposta sem imagem")
-            continue
-        iters = response.get("iters")
-        tempo_reconstrucao = response.get("tempo_reconstrucao")
-        erro_final = response.get("erro_final")
-        tempo_inicio = response.get("tempo_inicio")
-        tempo_final = response.get("tempo_fim")
-        converg = erro_final is not None and erro_final < 1e-4
+    if not isinstance(response, dict):
+        print(f"[client {client_id}] sem resposta")
+        return
+    if "error" in response:
+        print(f"[client {client_id}] falha no servidor: {response['error']}")
+        return
+    img_data = response.get("image")
+    if img_data is None:
+        print(f"[client {client_id}] resposta sem imagem")
+        return
 
-        img_array = np.array(img_data)
-        png_path = f"reconstructed_client{client_id}_{algo}_img{img_random}.png"
-        salvar_imagem(
-            png_path,
-            img_array,
-            algorithm=algo,
-            tempo_inicio=tempo_inicio,
-            tempo_final=tempo_final,
-            iters=iters,
+    iters = response.get("iters")
+    tempo_reconstrucao = response.get("tempo_reconstrucao") or response.get("reconstruction_time")
+    erro_final = response.get("erro_final") or response.get("final_error")
+    tempo_inicio = response.get("tempo_inicio") or response.get("start_time")
+    tempo_final = response.get("tempo_fim") or response.get("end_time")
+    converg = erro_final is not None and erro_final < 1e-4
+
+    img_array = np.array(img_data)
+    png_path = f"reconstructed_client{client_id}_{algo_random}_img{img_random}.png"
+    salvar_imagem(
+        png_path,
+        img_array,
+        algorithm=algo_random,
+        tempo_inicio=tempo_inicio,
+        tempo_final=tempo_final,
+        iters=iters,
+    )
+    status = "OK" if converg else "NAO-CONVERGIU"
+    print(
+        f"[client {client_id}] {png_path} iters={iters} eps={erro_final:.3e} "
+        f"t={tempo_reconstrucao:.3f}s {status}"
+    )
+
+    with relatorio_lock:
+        relatorio_rows.append(
+            {
+                "client_id": client_id,
+                "algorithm": algo_random,
+                "model_id": value["model_id"],
+                "image_number": img_random,
+                "ganho_aplicado": aplicar_ganho,
+                "image_file": png_path,
+                "iters": iters,
+                "erro_final": erro_final,
+                "converg": converg,
+                "tempo_inicio": tempo_inicio,
+                "tempo_final": tempo_final,
+                "reconstruction_time": tempo_reconstrucao,
+            }
         )
-        # convergencia significa que o erro final ficou abaixo de 1e-4
-        # e ok significa que o processo de reconstrução foi concluído sem erros, mesmo que não tenha convergido
-        status = "OK" if converg else "NAO-CONVERGIU"
-        print(
-            f"[client {client_id}-{algo}] {png_path} iters={iters} eps={erro_final:.3e} t={tempo_reconstrucao:.3f}s {status}"
-        )
-
-        with relatorio_lock:
-            relatorio_rows.append(
-                {
-                    "client_id": client_id,
-                    "algorithm": algo,
-                    "model_id": value["model_id"],
-                    "image_number": img_random,
-                    "signal_gain": gain,
-                    "image_file": png_path,
-                    "iters": iters,
-                    "erro_final": erro_final,
-                    "converg": converg,
-                    "tempo_inicio": tempo_inicio,
-                    "tempo_final": tempo_final,
-                    "reconstruction_time": tempo_reconstrucao,
-                }
-            )
 
 
 def run_cliente(client_id: int):

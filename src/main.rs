@@ -22,7 +22,14 @@ type F = f32;
 
 const MAX_ITER: usize = 10;
 const TOL: F = 1e-4;
-const RECON_TIMEOUT_S: u64 = 30;
+// tempo maximo p reconstrucao d img
+const TEMPO_CONSTRUCAO: u64 = 30;
+// piso de memoria abaixo do qual o request espera (nao rejeita). matching server.py
+const MEMO_MINIMA: f64 = 0.5;
+// so rejeita em ultimo caso, depois de 5 min esperando (evita deadlock em OOM real)
+const TEMPO_DE_ESPERA: u64 = 300;
+// frequencia de re-checagem da memoria durante a espera (em ms)
+const TEMPO_VERIFICACAO_MS: u64 = 500;
 
 struct Model {
     h: CsMat<F>,
@@ -41,7 +48,7 @@ struct ClientBuffer {
 struct AppState {
     models: HashMap<String, Arc<Model>>,
     client_signals: Mutex<HashMap<String, ClientBuffer>>,
-    inflight_sem: Arc<Semaphore>,
+    request_max: Arc<Semaphore>,
 }
 
 struct ModelCfg {
@@ -237,6 +244,9 @@ fn run_reconstruction(
         "CGNE" => cgne(model, g.view(), MAX_ITER, TOL),
         other => return Err(format!("algoritmo '{}' nao suportado", other)),
     };
+    // normaliza para o absoluto antes da escala de cinza para evitar que o
+    // brilho do sinal afete a escala de cinza da imagem reconstruida (task 2)
+    f.mapv_inplace(F::abs);
     minmax_normalize(f.as_slice_mut().unwrap());
     Ok((f, iters, err))
 }
@@ -272,6 +282,15 @@ struct Sinal {
 
 fn iso_now() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
+}
+
+/// Memoria disponivel do sistema em GB. Cria um System novo a cada chamada
+/// (refresh_memory e barato). Usado pelo wait-loop de admission control.
+fn memoria_disponivel_gb() -> f64 {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    sys.available_memory() as f64 / (1024.0 * 1024.0 * 1024.0)
 }
 
 #[handler]
@@ -319,8 +338,30 @@ async fn reconstruct(
         })).into_response();
     }
 
+    // admission control por pressao de memoria: nao rejeita por padrao, espera
+    // ate a memoria aliviar. so rejeita em ultimo caso, depois de TEMPO_DE_ESPERA
+    // (protecao contra deadlock em OOM real). matching server.py.
+    if memoria_disponivel_gb() < MEMO_MINIMA {
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(TEMPO_DE_ESPERA);
+        while memoria_disponivel_gb() < MEMO_MINIMA {
+            if std::time::Instant::now() > deadline {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": format!(
+                            "memoria abaixo de {}GB por mais de {}s; rejeitando para evitar deadlock",
+                            MEMO_MINIMA, TEMPO_DE_ESPERA
+                        )
+                    })),
+                ).into_response();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(TEMPO_VERIFICACAO_MS)).await;
+        }
+    }
+
     // admission control: limita reconstrucoes simultaneas a 2*cpu (mesma logica do Python).
-    let _permit = state.inflight_sem.clone().acquire_owned().await.unwrap();
+    let _permit = state.request_max.clone().acquire_owned().await.unwrap();
 
     let start_dt = iso_now();
     let t0 = std::time::Instant::now();
@@ -328,7 +369,7 @@ async fn reconstruct(
     // clona o Arc para que possamos acessar model.shape apos o spawn_blocking
     let model_for_task = model.clone();
     let result = tokio::time::timeout(
-        std::time::Duration::from_secs(RECON_TIMEOUT_S),
+        std::time::Duration::from_secs(TEMPO_CONSTRUCAO),
         tokio::task::spawn_blocking(move || run_reconstruction(&model_for_task, &algo_choice, g_arr)),
     ).await;
 
@@ -346,7 +387,7 @@ async fn reconstruct(
         }
         Err(_) => {
             return (StatusCode::GATEWAY_TIMEOUT,
-                    Json(json!({ "error": format!("timeout > {}s na reconstrucao", RECON_TIMEOUT_S) }))).into_response();
+                    Json(json!({ "error": format!("timeout > {}s na reconstrucao", TEMPO_CONSTRUCAO) }))).into_response();
         }
     };
 
@@ -365,10 +406,10 @@ async fn reconstruct(
         "message": format!("reconstrucao completa para {}", model_id_in_path),
         "image": img,
         "iters": iters,
-        "final_error": err,
-        "reconstruction_time": elapsed,
-        "start_time": start_dt,
-        "end_time": end_dt,
+        "erro_final": err,
+        "tempo_reconstrucao": elapsed,
+        "tempo_inicio": start_dt,
+        "tempo_fim": end_dt,
     })).into_response()
 }
 
@@ -412,11 +453,12 @@ async fn main() -> Result<(), std::io::Error> {
         }
     }
 
-    let max_inflight = (num_cpus::get() * 2).max(2);
+    #[allow(non_snake_case)]
+    let MAX_REQUEST = (num_cpus::get() * 2).max(2);
     let state = Arc::new(AppState {
         models,
         client_signals: Mutex::new(HashMap::new()),
-        inflight_sem: Arc::new(Semaphore::new(max_inflight)),
+        request_max: Arc::new(Semaphore::new(MAX_REQUEST)),
     });
 
     spawn_memory_monitor();
@@ -427,8 +469,8 @@ async fn main() -> Result<(), std::io::Error> {
         .data(state);
 
     println!(
-        "server on http://0.0.0.0:8000 (max_inflight={}, max_iter={}, tol={})",
-        max_inflight, MAX_ITER, TOL
+        "server on http://0.0.0.0:8000 (MAX_REQUEST={}, max_iter={}, tol={})",
+        MAX_REQUEST, MAX_ITER, TOL
     );
     Server::new(TcpListener::bind("0.0.0.0:8000")).run(app).await
 }

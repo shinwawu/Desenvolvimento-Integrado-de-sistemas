@@ -5,5 +5,5 @@ data/H-2.csv
 __pycache__
 data/H-2-dense.npz
 data/H-1.npz
-data/-1.csv
-data/-1-dense.npz
+data/H-1.csv
+data/H-1-dense.npz

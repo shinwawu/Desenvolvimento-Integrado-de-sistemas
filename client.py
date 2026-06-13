@@ -7,12 +7,17 @@ matplotlib.use("Agg")  # backend headless, seguro para uso em threads
 import matplotlib.pyplot as plt
 from threading import Thread, Lock
 import asyncio
+import os
 import time
 import random
 
 HOST = "127.0.0.1"
 PORT = 8000
-NUM_CLIENTS = 300
+NUM_CLIENTS = 30  # reduzido pra teste de 3 instancias paralelas
+
+# identificador unico desta instancia do client.py. permite rodar varias instancias
+# em paralelo sem colidir cliente_id no servidor nem sobrescrever os arquivos de saida.
+INSTANCE_ID = f"i{os.getpid()}"
 
 # serve para proteger o acesso concorrente a relatorio_rows, onde cada thread de cliente registra seus resultados
 relatorio_lock = Lock()
@@ -36,17 +41,17 @@ sinais = {
 
 
 def aplicar_ganho_sinal(g: np.ndarray) -> np.ndarray:
-    """Correcao de atenuacao por posicao (ganho de sinal / brilho):
+    """Calculo do ganho de sinal conforme especificacao:
 
-        g[l] = g[l] * (100 + (l/20) * sqrt(l)) / 100
+        gamma_l = 100 + (1/20) * l * sqrt(l)
+        g[l]    = g[l] * gamma_l
 
-    onde l e o indice 1-based da amostra. Amplifica as amostras finais para
-    compensar a atenuacao do sinal recebido, aumentando o brilho dos pixels
-    correspondentes na imagem reconstruida.
+    onde l e o indice 1-based da amostra. Amplifica as amostras finais
+    compensando a atenuacao do sinal recebido (brilho do sinal).
     """
     l = np.arange(1, len(g) + 1, dtype=np.float64)
-    fator = (100.0 + (l / 20.0) * np.sqrt(l)) / 100.0
-    return g * fator
+    gamma = 100.0 + (1.0 / 20.0) * l * np.sqrt(l)
+    return g * gamma
 
 
 # cada cliente envia a mesma sequencia de g para ambos os algoritmos
@@ -126,8 +131,9 @@ async def inicializar_cliente(client_id: int):
     n_parts = int(np.random.randint(1, 10))
     partes = np.array_split(g, n_parts)
 
+    cliente_id = f"{INSTANCE_ID}-{client_id}"
     response = await enviar_sequencia(
-        str(client_id), algo_random, value["model_id"], partes
+        cliente_id, algo_random, value["model_id"], partes
     )
 
     if not isinstance(response, dict):
@@ -149,7 +155,7 @@ async def inicializar_cliente(client_id: int):
     converg = erro_final is not None and erro_final < 1e-4
 
     img_array = np.array(img_data)
-    png_path = f"reconstructed_client{client_id}_{algo_random}_img{img_random}.png"
+    png_path = f"reconstructed_{INSTANCE_ID}_client{client_id}_{algo_random}_img{img_random}.png"
     salvar_imagem(
         png_path,
         img_array,
@@ -198,6 +204,7 @@ if __name__ == "__main__":
     df = pd.DataFrame(relatorio_rows)
     if not df.empty:
         df = df.sort_values(["client_id", "algorithm"])
-    df.to_csv("relatorio_reconstrucoes.csv", index=False)
+    csv_path = f"relatorio_{INSTANCE_ID}.csv"
+    df.to_csv(csv_path, index=False)
     print(f"\nAll {NUM_CLIENTS} clients finished in {time.time() - start:.2f}s")
-    print(f"Reconstructions: {len(df)} -> relatorio_reconstrucoes.csv")
+    print(f"Reconstructions: {len(df)} -> {csv_path}")

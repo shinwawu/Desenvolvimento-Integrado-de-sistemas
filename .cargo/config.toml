@@ -1,0 +1,4 @@
+[build]
+# habilita instrucoes especificas da CPU local (AVX2/AVX-512, FMA, etc).
+# essencial para o compilador gerar SIMD agressivo no sparse matvec.
+rustflags = ["-C", "target-cpu=native"]

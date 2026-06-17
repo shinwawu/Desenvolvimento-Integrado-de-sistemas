@@ -13,7 +13,7 @@ import random
 
 HOST = "127.0.0.1"
 PORT = 8000
-NUM_CLIENTS = 30  # reduzido pra teste de 3 instancias paralelas
+NUM_CLIENTS = int(os.environ.get("NUM_CLIENTS", "300"))
 
 # identificador unico desta instancia do client.py. permite rodar varias instancias
 # em paralelo sem colidir cliente_id no servidor nem sobrescrever os arquivos de saida.
@@ -22,6 +22,22 @@ INSTANCE_ID = f"i{os.getpid()}"
 # serve para proteger o acesso concorrente a relatorio_rows, onde cada thread de cliente registra seus resultados
 relatorio_lock = Lock()
 relatorio_rows: list[dict] = []
+
+# contadores de envios aceitos/rejeitados por modelo, alimentados pelas threads de cliente.
+# uma tarefa e "aceita" quando o servidor devolve uma imagem; e "rejeitada" quando ocorre
+# erro de request, rejeicao por memoria (HTTP 503) ou resposta sem imagem.
+contadores = {
+    "30x30": {"aceitas": 0, "rejeitadas": 0},
+    "60x60": {"aceitas": 0, "rejeitadas": 0},
+}
+
+
+def registrar_envio(model_id: str, aceita: bool):
+    """Incrementa, de forma thread-safe, o contador de envios do modelo dado."""
+    chave = "aceitas" if aceita else "rejeitadas"
+    with relatorio_lock:
+        contadores[model_id][chave] += 1
+
 
 imagem_modelo = {
     1: {"path": "g-30x30-1.csv", "model_id": "30x30"},
@@ -54,33 +70,72 @@ def aplicar_ganho_sinal(g: np.ndarray) -> np.ndarray:
     return g * gamma
 
 
-# cada cliente envia a mesma sequencia de g para ambos os algoritmos
-async def enviar_sequencia(
-    cliente_id: str, algorithm: str, model_id: str, partes: list[np.ndarray]
-):
+# intervalo entre consultas de polling e tempo maximo de espera pelo resultado
+POLL_INTERVAL = 0.5
+POLL_TIMEOUT = 120.0
+
+
+# modelo assincrono: o cliente dispara o request (apos um intervalo aleatorio),
+# recebe na hora um job_id e depois faz polling ate o resultado ficar pronto.
+# a conexao do POST nao fica presa durante a reconstrucao.
+async def enviar_sinal(cliente_id: str, algorithm: str, model_id: str, g: np.ndarray):
 
     url = f"http://{HOST}:{PORT}/reconstruct/{model_id}"
-    for i, parte in enumerate(partes):
-        await asyncio.sleep(random.uniform(0.1, 0.5))
-        payload = {"g": parte.tolist()}
-        params = {
-            "cliente_id": cliente_id,
-            "algorithm": algorithm,
-            "model_id": model_id,
-            "complete": i == len(partes) - 1,
-        }
+    # intervalo de tempo aleatorio antes de disparar o request
+    await asyncio.sleep(random.uniform(0.1, 0.5))
+    payload = {"g": g.tolist()}
+    params = {
+        "cliente_id": cliente_id,
+        "algorithm": algorithm,
+        "model_id": model_id,
+        "complete": True,
+    }
+    try:
+        # dispara o sinal; o servidor responde imediatamente com o job_id
+        response = await asyncio.to_thread(
+            requests.post, url, params=params, json=payload
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        print(f"[{cliente_id}] request error: {e}")
+        return {"error": str(e)}
+
+    # se o servidor recusou na validacao (modelo/tamanho), ja vem o erro aqui
+    job_id = data.get("job_id")
+    if not job_id:
+        return data
+
+    # consulta o resultado periodicamente ate concluir
+    return await aguardar_resultado(cliente_id, job_id)
+
+
+# faz polling em GET /result/{job_id} ate o job sair de "pending"
+async def aguardar_resultado(cliente_id: str, job_id: str):
+    url = f"http://{HOST}:{PORT}/result/{job_id}"
+    deadline = time.time() + POLL_TIMEOUT
+    while True:
+        await asyncio.sleep(POLL_INTERVAL)
         try:
-            # realiza o envio da parte atual para o servidor, aguardando a resposta de forma assíncrona
-            response = await asyncio.to_thread(
-                requests.post, url, params=params, json=payload
-            )
-            # verifica se a resposta do servidor indica sucesso, caso contrário, lança uma exceção
-            response.raise_for_status()
-            if params["complete"]:
-                return response.json()
+            response = await asyncio.to_thread(requests.get, url)
         except requests.RequestException as e:
-            print(f"[{cliente_id}] request error: {e}")
+            print(f"[{cliente_id}] poll error: {e}")
             return {"error": str(e)}
+
+        if response.status_code == 404:
+            return {"error": f"job {job_id} nao encontrado"}
+        try:
+            data = response.json()
+        except ValueError:
+            return {"error": f"resposta invalida do servidor: {response.text[:120]}"}
+
+        status = data.get("status")
+        if status == "pending":
+            if time.time() > deadline:
+                return {"error": f"timeout aguardando job {job_id}"}
+            continue
+        # status "done" (com imagem) ou "error" -> entrega para o chamador
+        return data
 
 
 # salva a imagem reconstruida
@@ -128,27 +183,30 @@ async def inicializar_cliente(client_id: int):
     g = sinais[img_random]
     if aplicar_ganho:
         g = aplicar_ganho_sinal(g)
-    n_parts = int(np.random.randint(1, 10))
-    partes = np.array_split(g, n_parts)
 
     cliente_id = f"{INSTANCE_ID}-{client_id}"
-    response = await enviar_sequencia(
-        cliente_id, algo_random, value["model_id"], partes
-    )
+    response = await enviar_sinal(cliente_id, algo_random, value["model_id"], g)
 
     if not isinstance(response, dict):
         print(f"[client {client_id}] sem resposta")
+        registrar_envio(value["model_id"], aceita=False)
         return
     if "error" in response:
         print(f"[client {client_id}] falha no servidor: {response['error']}")
+        registrar_envio(value["model_id"], aceita=False)
         return
     img_data = response.get("image")
     if img_data is None:
         print(f"[client {client_id}] resposta sem imagem")
+        registrar_envio(value["model_id"], aceita=False)
         return
 
+    registrar_envio(value["model_id"], aceita=True)
+
     iters = response.get("iters")
-    tempo_reconstrucao = response.get("tempo_reconstrucao") or response.get("reconstruction_time")
+    tempo_reconstrucao = response.get("tempo_reconstrucao") or response.get(
+        "reconstruction_time"
+    )
     erro_final = response.get("erro_final") or response.get("final_error")
     tempo_inicio = response.get("tempo_inicio") or response.get("start_time")
     tempo_final = response.get("tempo_fim") or response.get("end_time")
@@ -193,6 +251,26 @@ def run_cliente(client_id: int):
     asyncio.run(inicializar_cliente(client_id))
 
 
+# escreve no arquivo f e no stdout o resumo de tarefas aceitas/rejeitadas por modelo
+def gerar_relatorio_geral(f, contadores, pid_cliente, num_tarefas):
+    f.write(f"\n\n--- Relatório de Envio (PID: {pid_cliente}) ---\n")
+    print(f"\n--- Relatório de Envio (PID: {pid_cliente}) ---")
+
+    f.write(f"Total de {num_tarefas} tarefas tentadas.\n")
+    print(f"Total de {num_tarefas} tarefas tentadas.")
+
+    linha_60 = f"  - Modelo 60x60: {contadores['60x60']['aceitas']} Aceitas, {contadores['60x60']['rejeitadas']} Rejeitadas.\n"
+    linha_30 = f"  - Modelo 30x30: {contadores['30x30']['aceitas']} Aceitas, {contadores['30x30']['rejeitadas']} Rejeitadas.\n"
+
+    f.write(linha_60)
+    f.write(linha_30)
+    print(linha_60, end="")
+    print(linha_30, end="")
+
+    f.write("\n-------------------------------------------\n")
+    print("\n-------------------------------------------")
+
+
 if __name__ == "__main__":
     start = time.time()
     threads = [Thread(target=run_cliente, args=(i + 1,)) for i in range(NUM_CLIENTS)]
@@ -208,3 +286,8 @@ if __name__ == "__main__":
     df.to_csv(csv_path, index=False)
     print(f"\nAll {NUM_CLIENTS} clients finished in {time.time() - start:.2f}s")
     print(f"Reconstructions: {len(df)} -> {csv_path}")
+
+    relatorio_path = f"relatorio_clientes_{INSTANCE_ID}.txt"
+    with open(relatorio_path, "w", encoding="utf-8") as f:
+        gerar_relatorio_geral(f, contadores, os.getpid(), NUM_CLIENTS)
+    print(f"Relatorio de envio -> {relatorio_path}")

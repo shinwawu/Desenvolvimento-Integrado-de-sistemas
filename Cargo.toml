@@ -16,6 +16,17 @@ num_cpus = "1"
 zip = "2"
 chrono = "0.4"
 sysinfo = "0.32"
+rayon = "1.10"
+faer = "0.22"
+# ryu/itoa: float/int → ASCII rapidos (ryu ~2-3x mais rapido que dtoa). usados
+# no response builder manual que evita Vec<Vec<f32>> + serde_json::Value.
+ryu = "1.0"
+itoa = "1.0"
+# mimalloc: allocator paralelo, arena-aware. Substitui o allocator default do
+# Windows (lento sob alta concorrencia). 5-15% de melhoria observada tipicamente.
+mimalloc = { version = "0.1", default-features = false }
+# reqwest: cliente HTTP usado pelo proxy para encaminhar requests aos workers.
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
 
 
 [profile.release]

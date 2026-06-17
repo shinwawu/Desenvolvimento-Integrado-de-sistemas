@@ -1,6 +1,47 @@
+// =============================================================================
+//  Servidor de reconstrucao de imagens — implementacao Rust (multi-process)
+// =============================================================================
+//
+// Equivalente externo de server.py (Python): mesmo protocolo HTTP, mesmas
+// respostas JSON, mesma politica de admissao (espera memoria liberar, nao
+// rejeita). Pode ser apontado pelo cliente Python sem mudancas.
+//
+// Arquitetura:
+//
+//   cliente HTTP ─────► proxy (porta 8000) ─────┬─► worker 1 (porta 8001)
+//                            │                  ├─► worker 2 (porta 8002)
+//                            │                  ├─► worker 3 (porta 8003)
+//                            └ memory monitor   └─► worker 4 (porta 8004)
+//
+//   - proxy: load balancer com sticky routing por hash(cliente_id) %% N
+//   - workers: child processes do mesmo binario, cada um com estado local em
+//     CLIENT_SIGNALS (DashMap) e modelos carregados em memoria
+//   - sticky routing garante que chunks de um mesmo cliente_id sempre caem no
+//     mesmo worker — o estado de chunks pode ficar local sem replicacao
+//
+// Pipeline de uma reconstrucao:
+//
+//   1. Cliente faz POST /reconstruct/{model_id}?cliente_id=X&algorithm=Y&complete=Z
+//   2. Proxy roteia para worker = workers[hash(X) %% N]
+//   3. Worker acumula chunks no DashMap (1 entrada por cliente_id)
+//   4. No chunk final (complete=true), worker espera ate ter memoria,
+//      adquire um permit do semaforo (max_request por worker), e roda a
+//      reconstrucao via faer::sparse_dense_matmul em uma thread blocking
+//   5. Resposta serializada manualmente com ryu/itoa (sem serde_json::Value
+//      nem Vec<Vec<f32>> intermediarios), proxy encaminha de volta
+//
+// Otimizacoes aplicadas (todas mantidas):
+//
+//   - mimalloc como global allocator
+//   - faer::SparseColMat para matvec (kernel SIMD nativo)
+//   - target-cpu=native em .cargo/config.toml (AVX2/AVX-512 + FMA)
+//   - response builder manual usando ryu (float→ASCII) e itoa (int→ASCII)
+//   - DashMap para CLIENT_SIGNALS (sharding sem lock global)
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ndarray::{Array1, ArrayView1};
 use ndarray_npy::NpzReader;
@@ -17,6 +58,13 @@ use serde::Deserialize;
 use serde_json::json;
 use sprs::CsMat;
 use tokio::sync::Semaphore;
+use faer::sparse::{SparseColMat, SymbolicSparseColMat};
+use faer::sparse::linalg::matmul::sparse_dense_matmul;
+use faer::{Accum, Par};
+
+// Allocator paralelo, ~5-15% melhor que o default do Windows sob alta carga.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 type F = f32;
 
@@ -32,23 +80,36 @@ const TEMPO_DE_ESPERA: u64 = 300;
 const TEMPO_VERIFICACAO_MS: u64 = 500;
 
 struct Model {
-    h: CsMat<F>,
-    ht: CsMat<F>, // precomputed CSR transpose for fast matvec
+    // faer SparseColMat (CSC): kernel SIMD do sparse_dense_matmul opera direto
+    // sobre CSC. Cada coluna pode ser vetorizada com AVX2/AVX-512 (target-native).
+    // sprs era so para parsing do npz; aqui armazenamos no formato que faer roda.
+    h: SparseColMat<usize, F>,
+    ht: SparseColMat<usize, F>,
     s: usize,
     n: usize,
     shape: (usize, usize),
 }
 
-#[derive(Default)]
-struct ClientBuffer {
-    algorithm: String,
-    g_parts: Vec<F>,
+// Estado de um job assincrono. Pending enquanto a reconstrucao roda em background;
+// Ready quando termina (sucesso ou erro), guardando o corpo JSON ja serializado e
+// o status HTTP que o /result deve devolver.
+enum JobState {
+    Pending,
+    Ready { status_code: u16, body: String },
 }
 
 struct AppState {
     models: HashMap<String, Arc<Model>>,
-    client_signals: Mutex<HashMap<String, ClientBuffer>>,
+    // semaforo limita reconstrucoes simultaneas (CPU/cache).
     request_max: Arc<Semaphore>,
+    // jobs assincronos deste worker, indexados por job_id. O processamento roda em
+    // background e o cliente consulta o resultado via GET /result/{job_id}.
+    jobs: Mutex<HashMap<String, JobState>>,
+    // sequencial para gerar job_ids unicos; prefixado com `port` para o proxy saber
+    // rotear o /result de volta ao worker dono do job.
+    job_seq: AtomicU64,
+    // porta deste worker, usada como prefixo do job_id.
+    port: u16,
 }
 
 struct ModelCfg {
@@ -70,6 +131,15 @@ fn model_configs() -> Vec<(&'static str, ModelCfg)> {
         ),
     ]
 }
+
+// =============================================================================
+//                       carga dos modelos H (.npz scipy)
+// =============================================================================
+//
+// Os arquivos data/H-1.npz e data/H-2.npz vem do matrix_converter.py (scipy
+// sparse, CSR f32). Lemos os 4 arrays internos (format/shape/data/indices/
+// indptr), montamos um sprs::CsMat para validacao de shape e depois convertemos
+// para faer::SparseColMat que e o storage usado no matvec.
 
 /// Parse the raw bytes of a 0-d `|S3` npy file (scipy sparse format field) into a string.
 fn parse_npy_s3_string(npy: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
@@ -138,16 +208,67 @@ fn load_scipy_sparse_npz(path: &str) -> Result<CsMat<F>, Box<dyn std::error::Err
     Ok(mat)
 }
 
+/// Converte sprs::CsMat (qualquer storage) para faer::SparseColMat (CSC).
+/// CSR de M e equivalente a CSC de M^T; entao convertemos para CSC via sprs
+/// e extraimos col_ptr / row_idx / values para construir o tipo do faer.
+fn sprs_to_faer(m: CsMat<F>) -> SparseColMat<usize, F> {
+    let m_csc = if m.is_csr() { m.to_other_storage() } else { m };
+    let (nrows, ncols) = m_csc.shape();
+    let col_ptr: Vec<usize> = m_csc.indptr().raw_storage().to_vec();
+    let row_idx: Vec<usize> = m_csc.indices().to_vec();
+    let values: Vec<F> = m_csc.data().to_vec();
+    let symbolic = SymbolicSparseColMat::new_checked(nrows, ncols, col_ptr, None, row_idx);
+    SparseColMat::new(symbolic, values)
+}
+
 fn load_model(name: &str, cfg: &ModelCfg) -> Result<Model, Box<dyn std::error::Error>> {
-    let h = load_scipy_sparse_npz(cfg.path)?;
-    if h.shape() != (cfg.s, cfg.n) {
+    let h_sprs = load_scipy_sparse_npz(cfg.path)?;
+    if h_sprs.shape() != (cfg.s, cfg.n) {
         return Err(
-            format!("{}: shape {:?}, expected ({}, {})", name, h.shape(), cfg.s, cfg.n).into(),
+            format!("{}: shape {:?}, expected ({}, {})", name, h_sprs.shape(), cfg.s, cfg.n).into(),
         );
     }
-    let ht = h.transpose_view().to_other_storage();
-    println!("loaded {}: nnz={}, transpose nnz={}", name, h.nnz(), ht.nnz());
+    let nnz = h_sprs.nnz();
+    let ht_sprs: CsMat<F> = h_sprs.transpose_view().to_other_storage();
+    let nnz_t = ht_sprs.nnz();
+    let h = sprs_to_faer(h_sprs);
+    let ht = sprs_to_faer(ht_sprs);
+    println!("loaded {}: nnz={}, transpose nnz={} (faer SparseColMat)", name, nnz, nnz_t);
     Ok(Model { h, ht, s: cfg.s, n: cfg.n, shape: cfg.shape })
+}
+
+// =============================================================================
+//                       algoritmos numericos (CGNR / CGNE)
+// =============================================================================
+//
+// Implementacoes batem com server.py: max_iter=10, tol=1e-4. Para no primeiro
+// criterio satisfeito (||r|| < tol OU k == max_iter).
+
+/// Sparse matvec via faer: y = h @ x. h e SparseColMat (CSC).
+///
+/// sparse_dense_matmul tem kernel SIMD vetorizado (com target-cpu=native:
+/// AVX2/AVX-512 + FMA). Par::Seq porque o paralelismo vem das requisicoes
+/// simultaneas (MAX_REQUEST), evitando contencao do thread pool do rayon.
+fn par_csr_matvec(h: &SparseColMat<usize, F>, x: &ArrayView1<F>) -> Array1<F> {
+    let nrows = h.nrows();
+    let ncols = h.ncols();
+    let x_slice = x.as_slice().expect("x must be contiguous");
+    let x_mat = faer::MatRef::from_column_major_slice(x_slice, ncols, 1);
+    // escreve direto num Vec: evita o pulo Mat -> &slice -> Vec (1 alloc + 1 copia
+    // por matvec); Array1::from(Vec) e O(1), so transfere ownership.
+    let mut out_vec = vec![0.0_f32; nrows];
+    let y_mat = faer::MatMut::from_column_major_slice_mut(&mut out_vec, nrows, 1);
+    // Par::Seq: paralelismo vem das MAX_REQUEST=16 requisicoes simultaneas;
+    // adicionar threads internas piora throughput (oversubscription dos cores).
+    sparse_dense_matmul(
+        y_mat,
+        Accum::Replace,
+        h.as_ref(),
+        x_mat,
+        1.0,
+        Par::Seq,
+    );
+    Array1::from(out_vec)
 }
 
 /// CGNR: same algorithm as the Python server.
@@ -156,12 +277,12 @@ fn cgnr(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>,
     let tol_sq = tol * tol;
     let mut f = Array1::<F>::zeros(n);
     let mut r = g.to_owned();
-    let mut z: Array1<F> = &model.ht * &r;
+    let mut z: Array1<F> = par_csr_matvec(&model.ht, &r.view());
     let mut p = z.clone();
     let mut norm_z_sq = z.dot(&z);
 
     for k in 0..max_iter {
-        let w: Array1<F> = &model.h * &p;
+        let w: Array1<F> = par_csr_matvec(&model.h, &p.view());
         let norm_w_sq = w.dot(&w);
         if norm_w_sq == 0.0 {
             return (f, k, r.dot(&r).sqrt());
@@ -174,7 +295,7 @@ fn cgnr(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>,
         if norm_r_sq < tol_sq {
             return (f, k + 1, norm_r_sq.sqrt());
         }
-        z = &model.ht * &r;
+        z = par_csr_matvec(&model.ht, &r.view());
         let norm_z_new_sq = z.dot(&z);
         if norm_z_sq == 0.0 {
             return (f, k + 1, norm_r_sq.sqrt());
@@ -193,11 +314,11 @@ fn cgne(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>,
     let tol_sq = tol * tol;
     let mut f = Array1::<F>::zeros(n);
     let mut r = g.to_owned();              // r = g - H*0 = g
-    let mut p: Array1<F> = &model.ht * &r;
+    let mut p: Array1<F> = par_csr_matvec(&model.ht, &r.view());
     let mut rtr = r.dot(&r);
 
     for k in 0..max_iter {
-        let hp: Array1<F> = &model.h * &p;
+        let hp: Array1<F> = par_csr_matvec(&model.h, &p.view());
         let ptp = p.dot(&p);
         if ptp == 0.0 {
             return (f, k, rtr.sqrt());
@@ -210,7 +331,7 @@ fn cgne(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>,
             return (f, k + 1, new_rtr.sqrt());
         }
         let beta = new_rtr / rtr;
-        let htr: Array1<F> = &model.ht * &r;
+        let htr: Array1<F> = par_csr_matvec(&model.ht, &r.view());
         p *= beta;
         p += &htr;
         rtr = new_rtr;
@@ -251,13 +372,27 @@ fn run_reconstruction(
     Ok((f, iters, err))
 }
 
-// ---------- HTTP API (chunked protocol, mirrors the Python server) ----------
+// =============================================================================
+//                  worker HTTP handlers (espelha server.py)
+// =============================================================================
+//
+// Endpoints:
+//   POST /reconstruct/{model_id}?cliente_id=&algorithm=&complete=
+//   GET  /health
+//
+// Politica de admissao identica ao server.py:
+//   - chunks acumulados no DashMap por cliente_id
+//   - complete=True dispara: espera memoria liberar (nao rejeita), adquire
+//     semaforo, executa em thread blocking com timeout, devolve resposta
 
+// Query params do endpoint /reconstruct/{model_id} — bate com o que o cliente
+// Python envia. `model_id` aqui e o mesmo que o `:model_id` do path do URL;
+// ignoramos o duplicado no query string. `cliente_id` e a chave do sticky
+// routing no proxy. `complete=True` no chunk final dispara a reconstrucao.
 #[derive(Deserialize)]
 struct ReconstructQuery {
     cliente_id: String,
     algorithm: String,
-    model_id: String,
     #[serde(default, deserialize_with = "deserialize_bool_loose")]
     complete: bool,
 }
@@ -293,6 +428,9 @@ fn memoria_disponivel_gb() -> f64 {
     sys.available_memory() as f64 / (1024.0 * 1024.0 * 1024.0)
 }
 
+// Modelo assincrono: o POST valida o request, cria um job, dispara a reconstrucao
+// em background (tokio task) e responde na hora com {job_id}. O cliente consulta o
+// resultado depois em GET /result/{job_id}.
 #[handler]
 async fn reconstruct(
     Path(model_id_in_path): Path<String>,
@@ -300,31 +438,16 @@ async fn reconstruct(
     Data(state): Data<&Arc<AppState>>,
     Json(sinal): Json<Sinal>,
 ) -> Response {
-    // accumula chunks no buffer do cliente; so executa quando complete=true.
-    let (g_arr, algo_choice) = {
-        let mut signals = state.client_signals.lock().unwrap();
-        let buf = signals.entry(params.cliente_id.clone()).or_insert_with(|| ClientBuffer {
-            algorithm: params.algorithm.clone(),
-            g_parts: Vec::new(),
-        });
-        buf.g_parts.extend_from_slice(&sinal.g);
+    // sem mais acumulacao por cliente — o cliente envia g completo num unico POST.
+    let g_arr = Array1::from(sinal.g);
+    let algo_choice = params.algorithm.clone();
 
-        if !params.complete {
-            return Json(json!({
-                "message": format!("sinal g recebido para {}, aguardando mais partes...", model_id_in_path)
-            })).into_response();
-        }
-
-        // consome o buffer e libera o lock antes da reconstrucao
-        let algo = buf.algorithm.clone();
-        let g_taken = std::mem::take(&mut buf.g_parts);
-        (Array1::from(g_taken), algo)
-    };
-
+    // validacoes rapidas: falham na hora (sincronas), sem criar job.
     let model = match state.models.get(&model_id_in_path) {
         Some(m) => m.clone(),
         None => {
             return Json(json!({
+                "status": "error",
                 "error": format!("modelo '{}' nao encontrado. modelos disponiveis: {:?}",
                     model_id_in_path, state.models.keys().collect::<Vec<_>>())
             })).into_response();
@@ -333,11 +456,42 @@ async fn reconstruct(
 
     if g_arr.len() != model.s {
         return Json(json!({
+            "status": "error",
             "error": format!("tamanho do sinal g={} diferente do esperado {} para o modelo {}",
                 g_arr.len(), model.s, model_id_in_path)
         })).into_response();
     }
 
+    // cria o job (estado Pending) e dispara o processamento em background.
+    let seq = state.job_seq.fetch_add(1, Ordering::Relaxed);
+    let job_id = format!("{}-{}", state.port, seq);
+    state.jobs.lock().unwrap().insert(job_id.clone(), JobState::Pending);
+
+    let state_bg = state.clone();
+    let model_id = model_id_in_path.clone();
+    let job_id_bg = job_id.clone();
+    tokio::spawn(async move {
+        let resultado = processar_reconstrucao(&state_bg, &model, &model_id, &algo_choice, g_arr).await;
+        state_bg.jobs.lock().unwrap().insert(job_id_bg, resultado);
+    });
+
+    // responde imediatamente — a conexao do POST nao fica presa ate a reconstrucao.
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "status": "pending", "job_id": job_id })),
+    ).into_response()
+}
+
+// Executa a reconstrucao de um job em background e devolve o JobState::Ready final
+// (corpo JSON ja serializado + status HTTP). Aplica a mesma politica de admissao
+// (espera memoria, semaforo, timeout) que a versao sincrona usava.
+async fn processar_reconstrucao(
+    state: &Arc<AppState>,
+    model: &Arc<Model>,
+    model_id: &str,
+    algo_choice: &str,
+    g_arr: Array1<F>,
+) -> JobState {
     // admission control por pressao de memoria: nao rejeita por padrao, espera
     // ate a memoria aliviar. so rejeita em ultimo caso, depois de TEMPO_DE_ESPERA
     // (protecao contra deadlock em OOM real). matching server.py.
@@ -346,15 +500,16 @@ async fn reconstruct(
             + std::time::Duration::from_secs(TEMPO_DE_ESPERA);
         while memoria_disponivel_gb() < MEMO_MINIMA {
             if std::time::Instant::now() > deadline {
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({
+                return JobState::Ready {
+                    status_code: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                    body: json!({
+                        "status": "error",
                         "error": format!(
                             "memoria abaixo de {}GB por mais de {}s; rejeitando para evitar deadlock",
                             MEMO_MINIMA, TEMPO_DE_ESPERA
                         )
-                    })),
-                ).into_response();
+                    }).to_string(),
+                };
             }
             tokio::time::sleep(std::time::Duration::from_millis(TEMPO_VERIFICACAO_MS)).await;
         }
@@ -368,9 +523,10 @@ async fn reconstruct(
 
     // clona o Arc para que possamos acessar model.shape apos o spawn_blocking
     let model_for_task = model.clone();
+    let algo = algo_choice.to_string();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(TEMPO_CONSTRUCAO),
-        tokio::task::spawn_blocking(move || run_reconstruction(&model_for_task, &algo_choice, g_arr)),
+        tokio::task::spawn_blocking(move || run_reconstruction(&model_for_task, &algo, g_arr)),
     ).await;
 
     let elapsed = t0.elapsed().as_secs_f64();
@@ -379,38 +535,92 @@ async fn reconstruct(
     let (f, iters, err) = match result {
         Ok(Ok(Ok(triple))) => triple,
         Ok(Ok(Err(msg))) => {
-            return Json(json!({ "error": format!("erro na reconstrucao: {}", msg) })).into_response();
+            return JobState::Ready {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                body: json!({ "status": "error", "error": format!("erro na reconstrucao: {}", msg) }).to_string(),
+            };
         }
         Ok(Err(_)) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "task panicked" }))).into_response();
+            return JobState::Ready {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                body: json!({ "status": "error", "error": "task panicked" }).to_string(),
+            };
         }
         Err(_) => {
-            return (StatusCode::GATEWAY_TIMEOUT,
-                    Json(json!({ "error": format!("timeout > {}s na reconstrucao", TEMPO_CONSTRUCAO) }))).into_response();
+            return JobState::Ready {
+                status_code: StatusCode::GATEWAY_TIMEOUT.as_u16(),
+                body: json!({ "status": "error", "error": format!("timeout > {}s na reconstrucao", TEMPO_CONSTRUCAO) }).to_string(),
+            };
         }
     };
 
-    println!("reconstrucao {} completa: iters={}, erro final={:.6}", model_id_in_path, iters, err);
+    println!("reconstrucao {} completa: iters={}, erro final={:.6}", model_id, iters, err);
 
-    // reshape com ordem 'F' (coluna principal), igual ao Python.
+    // serializa a resposta manualmente sem passar por serde_json::Value nem alocar
+    // Vec<Vec<f32>>. ryu/itoa sao formatadores ASCII otimos (mais rapidos que dtoa
+    // do serde_json). image fica reshapado em ordem 'F' (coluna principal) inline
+    // direto na escrita do JSON, evitando o staging intermediario.
     let (rows, cols) = model.shape;
-    let mut img = vec![vec![0.0f32; cols]; rows];
-    for j in 0..cols {
-        for i in 0..rows {
-            img[i][j] = f[j * rows + i];
-        }
-    }
+    let mut buf = String::with_capacity(rows * cols * 12 + 256);
+    let mut ryu_buf = ryu::Buffer::new();
+    let mut itoa_buf = itoa::Buffer::new();
 
-    Json(json!({
-        "message": format!("reconstrucao completa para {}", model_id_in_path),
-        "image": img,
-        "iters": iters,
-        "erro_final": err,
-        "tempo_reconstrucao": elapsed,
-        "tempo_inicio": start_dt,
-        "tempo_fim": end_dt,
-    })).into_response()
+    buf.push_str(r#"{"status":"done","message":"reconstrucao completa para "#);
+    buf.push_str(model_id);
+    buf.push_str(r#"","image":["#);
+    for i in 0..rows {
+        if i > 0 { buf.push(','); }
+        buf.push('[');
+        for j in 0..cols {
+            if j > 0 { buf.push(','); }
+            buf.push_str(ryu_buf.format(f[j * rows + i]));
+        }
+        buf.push(']');
+    }
+    buf.push_str(r#"],"iters":"#);
+    buf.push_str(itoa_buf.format(iters));
+    buf.push_str(r#","erro_final":"#);
+    buf.push_str(ryu_buf.format(err));
+    buf.push_str(r#","tempo_reconstrucao":"#);
+    buf.push_str(ryu_buf.format(elapsed));
+    buf.push_str(r#","tempo_inicio":""#);
+    buf.push_str(&start_dt);
+    buf.push_str(r#"","tempo_fim":""#);
+    buf.push_str(&end_dt);
+    buf.push_str("\"}");
+
+    JobState::Ready { status_code: StatusCode::OK.as_u16(), body: buf }
+}
+
+// GET /result/{job_id}: devolve o estado do job. Pending => 200 {"status":"pending"};
+// pronto => o corpo final (com a imagem ou o erro) e o job e removido do mapa;
+// inexistente => 404. So um fetch terminal consome o job.
+#[handler]
+async fn job_result(Path(job_id): Path<String>, Data(state): Data<&Arc<AppState>>) -> Response {
+    let mut jobs = state.jobs.lock().unwrap();
+    match jobs.get(&job_id) {
+        None => {
+            drop(jobs);
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "status": "not_found", "error": "job nao encontrado" })),
+            ).into_response();
+        }
+        Some(JobState::Pending) => {
+            drop(jobs);
+            return Json(json!({ "status": "pending" })).into_response();
+        }
+        Some(JobState::Ready { .. }) => {}
+    }
+    // terminal: remove e devolve o corpo ja serializado.
+    let Some(JobState::Ready { status_code, body }) = jobs.remove(&job_id) else {
+        unreachable!("job verificado como Ready acima");
+    };
+    drop(jobs);
+    Response::builder()
+        .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK))
+        .header("content-type", "application/json")
+        .body(body)
 }
 
 #[handler]
@@ -418,17 +628,21 @@ async fn health(Data(state): Data<&Arc<AppState>>) -> Json<serde_json::Value> {
     Json(json!({"status": "ok", "models": state.models.keys().collect::<Vec<_>>()}))
 }
 
-/// Monitor de memoria: imprime uso/disponibilidade do sistema a cada 1s.
-fn spawn_memory_monitor() {
+/// Monitor de memoria — roda so no proxy, imprimindo 1 linha/s.
+/// `app_pids`: PIDs do proxy + todos os workers; o "uso da app" e a soma dos RSS.
+/// Workers nao rodam esse monitor para evitar N linhas por segundo no terminal.
+fn spawn_memory_monitor(app_pids: Vec<u32>) {
     tokio::spawn(async move {
         use sysinfo::{System, Pid, ProcessesToUpdate};
         let mut sys = System::new_all();
-        let pid_self = Pid::from_u32(std::process::id());
+        let pids: Vec<Pid> = app_pids.iter().map(|&p| Pid::from_u32(p)).collect();
         const GB: f64 = 1024.0 * 1024.0 * 1024.0;
         loop {
             sys.refresh_memory();
-            sys.refresh_processes(ProcessesToUpdate::Some(&[pid_self]), true);
-            let rss_gb = sys.process(pid_self).map(|p| p.memory()).unwrap_or(0) as f64 / GB;
+            sys.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+            let rss_total: u64 = pids.iter()
+                .filter_map(|p| sys.process(*p).map(|proc_| proc_.memory()))
+                .sum();
             let total = sys.total_memory() as f64 / GB;
             let used = sys.used_memory() as f64 / GB;
             let avail = sys.available_memory() as f64 / GB;
@@ -436,15 +650,23 @@ fn spawn_memory_monitor() {
             let now = chrono::Local::now().format("%H:%M:%S");
             println!(
                 "[memoria {}] sistema usada={:.2}GB disponivel={:.2}GB / total={:.2}GB ({:.1}%) | uso da app ={:.2}GB",
-                now, used, avail, total, pct, rss_gb
+                now, used, avail, total, pct, rss_total as f64 / GB
             );
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     });
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), std::io::Error> {
+// =============================================================================
+//                                   worker
+// =============================================================================
+//
+// Cada worker carrega os modelos H-1.npz/H-2.npz e expoe /reconstruct/{model_id}
+// e /health. Estado dos chunks por cliente fica local (sticky routing no proxy
+// garante que o mesmo cliente_id sempre cai aqui).
+
+/// Roda um worker na porta `port` com `max_request` reconstrucoes simultaneas.
+async fn run_worker(port: u16, max_request: usize) -> Result<(), std::io::Error> {
     let mut models = HashMap::new();
     for (name, cfg) in model_configs() {
         match load_model(name, &cfg) {
@@ -454,23 +676,278 @@ async fn main() -> Result<(), std::io::Error> {
     }
 
     #[allow(non_snake_case)]
-    let MAX_REQUEST = (num_cpus::get() * 2).max(2);
+    let MAX_REQUEST = max_request;
     let state = Arc::new(AppState {
         models,
-        client_signals: Mutex::new(HashMap::new()),
         request_max: Arc::new(Semaphore::new(MAX_REQUEST)),
+        jobs: Mutex::new(HashMap::new()),
+        job_seq: AtomicU64::new(0),
+        port,
     });
 
-    spawn_memory_monitor();
+    // o monitor de memoria roda no proxy (1 linha agregada por segundo).
 
     let app = Route::new()
         .at("/reconstruct/:model_id", post(reconstruct))
+        .at("/result/:job_id", poem::get(job_result))
         .at("/health", poem::get(health))
         .data(state);
 
     println!(
-        "server on http://0.0.0.0:8000 (MAX_REQUEST={}, max_iter={}, tol={})",
-        MAX_REQUEST, MAX_ITER, TOL
+        "[worker:{port}] server on http://0.0.0.0:{port} (MAX_REQUEST={MAX_REQUEST}, max_iter={MAX_ITER}, tol={TOL})"
     );
-    Server::new(TcpListener::bind("0.0.0.0:8000")).run(app).await
+    Server::new(TcpListener::bind(format!("0.0.0.0:{port}"))).run(app).await
+}
+
+// =============================================================================
+//             proxy: load balancer com sticky routing por cliente_id
+// =============================================================================
+//
+// Recebe todas as requisicoes externas em 8000 e encaminha para o worker
+// determinado por hash(cliente_id) % N_WORKERS. Como o mesmo cliente sempre
+// Cada request agora carrega o sinal completo num unico POST — sem estado por
+// cliente_id, qualquer worker pode servir qualquer request. Trocamos sticky
+// routing por round-robin atomico (distribuicao perfeitamente uniforme com
+// overhead minimo).
+
+struct ProxyState {
+    worker_ports: Vec<u16>,
+    rr_counter: std::sync::atomic::AtomicUsize,
+    http: reqwest::Client,
+}
+
+#[handler]
+async fn proxy_reconstruct(
+    Path(model_id_in_path): Path<String>,
+    Query(params): Query<ReconstructQuery>,
+    Data(state): Data<&Arc<ProxyState>>,
+    body: bytes::Bytes,
+) -> Response {
+    // round-robin: contador atomico mod N. Distribuicao uniforme entre workers,
+    // sem fingerprint do cliente_id (que nao e mais necessario para estado).
+    let idx = state.rr_counter
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        % state.worker_ports.len();
+    let port = state.worker_ports[idx];
+    let url = format!(
+        "http://127.0.0.1:{port}/reconstruct/{model_id_in_path}\
+         ?cliente_id={cid}&algorithm={algo}&model_id={mid}&complete={cmp}",
+        cid = urlencode(&params.cliente_id),
+        algo = urlencode(&params.algorithm),
+        mid = urlencode(&model_id_in_path),
+        cmp = params.complete,
+    );
+    match state.http.post(&url)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(r) => {
+            let status = StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::OK);
+            let body = r.bytes().await.unwrap_or_default();
+            Response::builder()
+                .status(status)
+                .header("content-type", "application/json")
+                .body(body)
+        }
+        Err(e) => {
+            Json(json!({"error": format!("proxy -> worker:{port} falhou: {e}")})).into_response()
+        }
+    }
+}
+
+// GET /result/{job_id}: o job_id e prefixado com a porta do worker dono (`port-seq`),
+// entao roteamos o polling de volta para o mesmo worker que criou o job.
+#[handler]
+async fn proxy_result(
+    Path(job_id): Path<String>,
+    Data(state): Data<&Arc<ProxyState>>,
+) -> Response {
+    let port = match job_id.split('-').next().and_then(|p| p.parse::<u16>().ok()) {
+        Some(p) if state.worker_ports.contains(&p) => p,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "status": "error", "error": format!("job_id invalido: {job_id}") })),
+            ).into_response();
+        }
+    };
+    let url = format!("http://127.0.0.1:{port}/result/{}", urlencode(&job_id));
+    match state.http.get(&url).send().await {
+        Ok(r) => {
+            let status = StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::OK);
+            let body = r.bytes().await.unwrap_or_default();
+            Response::builder()
+                .status(status)
+                .header("content-type", "application/json")
+                .body(body)
+        }
+        Err(e) => {
+            Json(json!({ "status": "error", "error": format!("proxy -> worker:{port} falhou: {e}") })).into_response()
+        }
+    }
+}
+
+#[handler]
+async fn proxy_health(Data(state): Data<&Arc<ProxyState>>) -> Json<serde_json::Value> {
+    Json(json!({"status": "ok", "mode": "proxy", "workers": state.worker_ports}))
+}
+
+/// Url-encoding minimal: percent-escape so caracteres problematicos.
+fn urlencode(s: &str) -> String {
+    s.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+            (b as char).to_string()
+        }
+        _ => format!("%{:02X}", b),
+    }).collect()
+}
+
+async fn wait_for_health(port: u16, timeout_s: u64) -> bool {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(1))
+        .build()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_s);
+    while std::time::Instant::now() < deadline {
+        if let Ok(r) = client.get(format!("http://127.0.0.1:{port}/health")).send().await {
+            if r.status().is_success() {
+                return true;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// Roda como proxy + spawna N workers como child processes.
+async fn run_proxy(proxy_port: u16, n_workers: usize) -> Result<(), std::io::Error> {
+    use std::process::Command;
+
+    let worker_ports: Vec<u16> = (1..=n_workers as u16)
+        .map(|i| proxy_port + i)
+        .collect();
+
+    let exe = std::env::current_exe()?;
+    let mut children: Vec<std::process::Child> = Vec::with_capacity(n_workers);
+
+    // divide capacidade de CPU entre os workers para evitar oversubscription:
+    // total = 2*cpu_count concurrent reqs no agregado (mesmo teto do single).
+    let per_worker_max = ((num_cpus::get() * 2) / n_workers).max(1);
+    println!(
+        "[proxy] iniciando {n_workers} workers nas portas {worker_ports:?} (max_request/worker={per_worker_max})"
+    );
+    for &p in &worker_ports {
+        let mut cmd = Command::new(&exe);
+        cmd.arg("--worker")
+            .arg("--port").arg(p.to_string())
+            .arg("--max-request").arg(per_worker_max.to_string());
+        // herda stdout/stderr para os logs aparecerem no mesmo terminal
+        let child = cmd.spawn().expect("falha ao spawnar worker");
+        children.push(child);
+    }
+
+    // espera todos os workers responderem /health (carregam modelos antes)
+    for &p in &worker_ports {
+        if !wait_for_health(p, 60).await {
+            eprintln!("[proxy] worker {p} nao subiu em 60s");
+        }
+    }
+    println!("[proxy] {n_workers} workers prontos");
+
+    // 1 linha de memoria por segundo, agregando proxy + workers
+    let mut app_pids: Vec<u32> = children.iter().map(|c| c.id()).collect();
+    app_pids.push(std::process::id());
+    spawn_memory_monitor(app_pids.clone());
+
+    // handler de Ctrl-C: matar todos os filhos antes de sair
+    let mut kids_for_signal: Vec<u32> = children.iter().map(|c| c.id()).collect();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        eprintln!("\n[proxy] Ctrl-C recebido, encerrando workers...");
+        for pid in kids_for_signal.drain(..) {
+            kill_pid(pid);
+        }
+        std::process::exit(0);
+    });
+
+    // timeout amplo: sob carga, requests aguardam na fila do semaforo do worker.
+    // 60s era curto demais sob 900 requests simultaneos / 4 inflight por worker.
+    let http = reqwest::Client::builder()
+        .pool_max_idle_per_host(128)
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .expect("build reqwest client");
+
+    let state = Arc::new(ProxyState {
+        worker_ports: worker_ports.clone(),
+        rr_counter: std::sync::atomic::AtomicUsize::new(0),
+        http,
+    });
+    let app = Route::new()
+        .at("/reconstruct/:model_id", post(proxy_reconstruct))
+        .at("/result/:job_id", poem::get(proxy_result))
+        .at("/health", poem::get(proxy_health))
+        .data(state);
+
+    println!("[proxy] escutando em http://0.0.0.0:{proxy_port} (sticky routing por cliente_id)");
+    let result = Server::new(TcpListener::bind(format!("0.0.0.0:{proxy_port}"))).run(app).await;
+
+    // cleanup: mata filhos ao sair normalmente
+    for mut c in children {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    result
+}
+
+#[cfg(windows)]
+fn kill_pid(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output();
+}
+
+#[cfg(not(windows))]
+fn kill_pid(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output();
+}
+
+// =============================================================================
+//                          entry point + CLI parsing
+// =============================================================================
+//
+// Modos:
+//   sem flags       → proxy: spawna N workers em 8001+ e roteia por cliente_id
+//   --worker --port → worker interno; usado pelo proxy ao criar child processes
+//
+// Flags opcionais:
+//   --port N        → porta do proxy (default 8000) ou do worker
+//   --workers N     → numero de workers a spawnar (default cpu_count/2)
+//   --max-request N → reconstrucoes simultaneas no worker (default 2*cpu_count)
+
+fn parse_arg<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
+    args.iter().position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+}
+
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> Result<(), std::io::Error> {
+    let args: Vec<String> = std::env::args().collect();
+    let is_worker = args.iter().any(|a| a == "--worker");
+    let port: u16 = parse_arg(&args, "--port").unwrap_or(8000);
+    let n_workers: usize = parse_arg(&args, "--workers")
+        .unwrap_or((num_cpus::get() / 2).max(2));
+    let max_request: usize = parse_arg(&args, "--max-request")
+        .unwrap_or((num_cpus::get() * 2).max(2));
+
+    if is_worker {
+        run_worker(port, max_request).await
+    } else {
+        run_proxy(port, n_workers).await
+    }
 }

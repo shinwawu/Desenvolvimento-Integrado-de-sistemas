@@ -1,0 +1,30 @@
+INFO:     Started server process [412]
+INFO:     Waiting for application startup.
+INFO:     Started server process [33544]
+INFO:     Waiting for application startup.
+INFO:     Started server process [5400]
+INFO:     Waiting for application startup.
+INFO:     Started server process [28836]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8002 (Press CTRL+C to quit)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8003 (Press CTRL+C to quit)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8004 (Press CTRL+C to quit)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started parent process [14108]
+INFO:     Started server process [31612]
+INFO:     Waiting for application startup.
+INFO:     Started server process [8160]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Application startup complete.
+INFO:     Started server process [34428]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Started server process [20184]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.

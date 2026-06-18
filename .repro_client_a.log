@@ -1,0 +1,613 @@
+[client 2] img=4 algo=CGNE ganho=sim model=60x60[client 3] img=4 algo=CGNR ganho=nao model=60x60
+
+[client 4] img=4 algo=CGNE ganho=sim model=60x60
+[client 1] img=1 algo=CGNE ganho=nao model=30x30
+[client 5] img=5 algo=CGNE ganho=sim model=60x60
+[client 6] img=3 algo=CGNE ganho=sim model=30x30
+[client 7] img=4 algo=CGNR ganho=nao model=60x60
+[client 9] img=2 algo=CGNR ganho=nao model=30x30[client 8] img=4 algo=CGNR ganho=nao model=60x60
+[client 11] img=1 algo=CGNR ganho=sim model=30x30
+
+[client 10] img=6 algo=CGNR ganho=nao model=60x60
+[client 12] img=6 algo=CGNR ganho=nao model=60x60
+[client 13] img=3 algo=CGNE ganho=sim model=30x30
+[client 15] img=4 algo=CGNR ganho=nao model=60x60
+[client 14] img=6 algo=CGNE ganho=nao model=60x60
+[client 16] img=4 algo=CGNE ganho=sim model=60x60
+[client 17] img=2 algo=CGNR ganho=sim model=30x30
+[client 18] img=1 algo=CGNR ganho=sim model=30x30
+[client 21] img=5 algo=CGNR ganho=nao model=60x60
+[client 19] img=5 algo=CGNE ganho=nao model=60x60
+[client 20] img=6 algo=CGNE ganho=sim model=60x60
+[client 22] img=3 algo=CGNE ganho=nao model=30x30
+[client 24] img=5 algo=CGNR ganho=nao model=60x60
+[client 25] img=5 algo=CGNE ganho=sim model=60x60[client 23] img=5 algo=CGNE ganho=sim model=60x60
+
+[client 26] img=6 algo=CGNE ganho=nao model=60x60
+[client 28] img=6 algo=CGNR ganho=nao model=60x60
+[client 29] img=1 algo=CGNE ganho=nao model=30x30
+[client 27] img=1 algo=CGNR ganho=sim model=30x30
+[client 30] img=3 algo=CGNE ganho=nao model=30x30
+[client 31] img=5 algo=CGNR ganho=sim model=60x60[client 32] img=1 algo=CGNE ganho=nao model=30x30
+
+[client 34] img=1 algo=CGNR ganho=nao model=30x30
+[client 33] img=4 algo=CGNR ganho=nao model=60x60
+[client 36] img=1 algo=CGNE ganho=sim model=30x30
+[client 38] img=3 algo=CGNR ganho=nao model=30x30[client 35] img=1 algo=CGNR ganho=sim model=30x30
+
+[client 37] img=2 algo=CGNE ganho=sim model=30x30
+[client 40] img=5 algo=CGNE ganho=nao model=60x60[client 39] img=4 algo=CGNR ganho=sim model=60x60[client 41] img=4 algo=CGNR ganho=nao model=60x60
+
+
+[client 42] img=2 algo=CGNR ganho=sim model=30x30
+[client 44] img=1 algo=CGNR ganho=sim model=30x30[client 43] img=5 algo=CGNR ganho=sim model=60x60
+
+[client 45] img=3 algo=CGNE ganho=sim model=30x30[client 46] img=5 algo=CGNE ganho=nao model=60x60
+
+[client 47] img=6 algo=CGNR ganho=sim model=60x60
+[client 48] img=5 algo=CGNR ganho=nao model=60x60
+[client 49] img=5 algo=CGNE ganho=nao model=60x60
+[client 52] img=3 algo=CGNE ganho=sim model=30x30[client 51] img=2 algo=CGNE ganho=sim model=30x30
+[client 50] img=4 algo=CGNR ganho=sim model=60x60
+
+[client 54] img=5 algo=CGNR ganho=nao model=60x60
+[client 53] img=2 algo=CGNE ganho=nao model=30x30
+[client 55] img=3 algo=CGNE ganho=nao model=30x30[client 56] img=2 algo=CGNE ganho=nao model=30x30
+
+[client 57] img=1 algo=CGNE ganho=nao model=30x30
+[client 58] img=2 algo=CGNR ganho=nao model=30x30[client 59] img=1 algo=CGNE ganho=nao model=30x30
+
+[client 60] img=5 algo=CGNE ganho=sim model=60x60
+[client 62] img=2 algo=CGNE ganho=sim model=30x30[client 61] img=4 algo=CGNE ganho=sim model=60x60
+
+[client 64] img=6 algo=CGNR ganho=nao model=60x60[client 63] img=6 algo=CGNR ganho=sim model=60x60
+
+[client 65] img=4 algo=CGNE ganho=sim model=60x60
+[client 67] img=5 algo=CGNE ganho=nao model=60x60[client 66] img=6 algo=CGNR ganho=nao model=60x60
+
+[client 69] img=2 algo=CGNR ganho=nao model=30x30
+[client 68] img=6 algo=CGNR ganho=nao model=60x60
+[client 73] img=5 algo=CGNR ganho=sim model=60x60[client 71] img=5 algo=CGNR ganho=sim model=60x60
+
+[client 72] img=4 algo=CGNE ganho=nao model=60x60[client 70] img=5 algo=CGNE ganho=sim model=60x60
+
+[client 74] img=5 algo=CGNE ganho=nao model=60x60
+[client 75] img=4 algo=CGNE ganho=nao model=60x60
+[client 78] img=6 algo=CGNE ganho=nao model=60x60[client 77] img=5 algo=CGNR ganho=nao model=60x60
+
+[client 76] img=1 algo=CGNE ganho=nao model=30x30
+[client 79] img=1 algo=CGNE ganho=sim model=30x30
+[client 82] img=2 algo=CGNE ganho=nao model=30x30[client 81] img=1 algo=CGNR ganho=sim model=30x30
+
+[client 80] img=2 algo=CGNE ganho=sim model=30x30
+[client 83] img=5 algo=CGNE ganho=nao model=60x60
+[client 84] img=6 algo=CGNE ganho=sim model=60x60[client 86] img=5 algo=CGNR ganho=sim model=60x60
+
+[client 85] img=4 algo=CGNR ganho=nao model=60x60
+[client 88] img=3 algo=CGNE ganho=sim model=30x30
+[client 89] img=4 algo=CGNR ganho=nao model=60x60[client 87] img=2 algo=CGNR ganho=nao model=30x30[client 90] img=2 algo=CGNR ganho=sim model=30x30
+
+
+[client 91] img=6 algo=CGNE ganho=nao model=60x60
+[client 92] img=4 algo=CGNE ganho=sim model=60x60[client 93] img=1 algo=CGNR ganho=sim model=30x30[client 94] img=4 algo=CGNE ganho=nao model=60x60
+
+
+[client 95] img=5 algo=CGNE ganho=nao model=60x60[client 96] img=6 algo=CGNR ganho=sim model=60x60
+
+[client 97] img=4 algo=CGNE ganho=sim model=60x60
+[client 98] img=6 algo=CGNR ganho=sim model=60x60
+[client 99] img=6 algo=CGNE ganho=nao model=60x60
+[client 100] img=1 algo=CGNR ganho=sim model=30x30
+[client 102] img=6 algo=CGNR ganho=nao model=60x60[client 101] img=3 algo=CGNR ganho=sim model=30x30
+[client 103] img=6 algo=CGNE ganho=nao model=60x60
+
+[client 104] img=2 algo=CGNE ganho=sim model=30x30
+[client 105] img=6 algo=CGNE ganho=nao model=60x60
+[client 106] img=4 algo=CGNE ganho=sim model=60x60
+[client 109] img=3 algo=CGNR ganho=sim model=30x30[client 107] img=6 algo=CGNE ganho=nao model=60x60
+
+[client 108] img=1 algo=CGNE ganho=nao model=30x30
+[client 111] img=5 algo=CGNE ganho=nao model=60x60
+[client 112] img=3 algo=CGNR ganho=sim model=30x30
+[client 114] img=4 algo=CGNR ganho=nao model=60x60[client 110] img=1 algo=CGNR ganho=nao model=30x30
+
+[client 113] img=4 algo=CGNR ganho=nao model=60x60[client 116] img=5 algo=CGNR ganho=sim model=60x60
+
+[client 117] img=4 algo=CGNE ganho=sim model=60x60[client 115] img=5 algo=CGNR ganho=sim model=60x60
+
+[client 118] img=6 algo=CGNR ganho=sim model=60x60
+[client 120] img=1 algo=CGNR ganho=sim model=30x30
+[client 119] img=6 algo=CGNR ganho=sim model=60x60
+[client 121] img=5 algo=CGNE ganho=nao model=60x60
+[client 122] img=4 algo=CGNR ganho=nao model=60x60
+[client 123] img=2 algo=CGNE ganho=sim model=30x30
+[client 124] img=6 algo=CGNR ganho=nao model=60x60[client 126] img=5 algo=CGNR ganho=sim model=60x60
+[client 125] img=1 algo=CGNR ganho=sim model=30x30[client 127] img=1 algo=CGNE ganho=nao model=30x30
+
+
+[client 130] img=2 algo=CGNE ganho=sim model=30x30
+[client 129] img=5 algo=CGNE ganho=sim model=60x60
+[client 128] img=5 algo=CGNR ganho=sim model=60x60
+[client 131] img=2 algo=CGNR ganho=nao model=30x30
+[client 133] img=3 algo=CGNE ganho=sim model=30x30[client 132] img=6 algo=CGNE ganho=sim model=60x60
+[client 135] img=5 algo=CGNE ganho=nao model=60x60
+
+[client 134] img=4 algo=CGNR ganho=nao model=60x60
+[client 136] img=6 algo=CGNR ganho=nao model=60x60
+[client 138] img=6 algo=CGNE ganho=nao model=60x60
+[client 137] img=5 algo=CGNR ganho=sim model=60x60
+[client 139] img=3 algo=CGNR ganho=sim model=30x30
+[client 142] img=4 algo=CGNR ganho=nao model=60x60
+[client 140] img=1 algo=CGNR ganho=nao model=30x30
+[client 141] img=3 algo=CGNR ganho=sim model=30x30
+[client 143] img=3 algo=CGNE ganho=nao model=30x30[client 144] img=4 algo=CGNE ganho=sim model=60x60
+
+[client 145] img=2 algo=CGNE ganho=sim model=30x30
+[client 147] img=5 algo=CGNR ganho=nao model=60x60[client 146] img=4 algo=CGNR ganho=sim model=60x60
+
+[client 148] img=2 algo=CGNR ganho=nao model=30x30
+[client 149] img=4 algo=CGNR ganho=nao model=60x60[client 150] img=2 algo=CGNE ganho=nao model=30x30
+
+[client 151] img=4 algo=CGNE ganho=nao model=60x60
+[client 153] img=4 algo=CGNR ganho=nao model=60x60
+[client 154] img=4 algo=CGNR ganho=nao model=60x60[client 152] img=6 algo=CGNR ganho=sim model=60x60
+[client 155] img=6 algo=CGNE ganho=sim model=60x60[client 156] img=6 algo=CGNE ganho=sim model=60x60
+
+
+[client 157] img=5 algo=CGNE ganho=sim model=60x60
+[client 158] img=6 algo=CGNE ganho=sim model=60x60[client 159] img=5 algo=CGNE ganho=sim model=60x60[client 160] img=6 algo=CGNE ganho=nao model=60x60
+
+
+[client 161] img=5 algo=CGNE ganho=sim model=60x60
+[client 162] img=5 algo=CGNR ganho=sim model=60x60
+[client 163] img=5 algo=CGNR ganho=nao model=60x60
+[client 165] img=5 algo=CGNE ganho=nao model=60x60
+[client 164] img=2 algo=CGNR ganho=nao model=30x30[client 167] img=3 algo=CGNE ganho=nao model=30x30[client 166] img=4 algo=CGNR ganho=nao model=60x60
+
+
+[client 168] img=2 algo=CGNR ganho=nao model=30x30
+[client 170] img=6 algo=CGNE ganho=sim model=60x60
+[client 172] img=5 algo=CGNE ganho=nao model=60x60
+[client 171] img=3 algo=CGNE ganho=nao model=30x30[client 169] img=1 algo=CGNE ganho=nao model=30x30
+
+[client 173] img=6 algo=CGNE ganho=nao model=60x60
+[client 174] img=6 algo=CGNR ganho=sim model=60x60[client 176] img=3 algo=CGNR ganho=sim model=30x30[client 175] img=3 algo=CGNE ganho=nao model=30x30
+
+
+[client 177] img=6 algo=CGNE ganho=nao model=60x60
+[client 178] img=6 algo=CGNE ganho=nao model=60x60
+[client 179] img=1 algo=CGNE ganho=nao model=30x30
+[client 181] img=3 algo=CGNE ganho=sim model=30x30
+[client 180] img=3 algo=CGNE ganho=nao model=30x30
+[client 182] img=1 algo=CGNR ganho=sim model=30x30
+[client 183] img=5 algo=CGNR ganho=sim model=60x60
+[client 184] img=5 algo=CGNR ganho=sim model=60x60
+[client 185] img=6 algo=CGNR ganho=nao model=60x60
+[client 186] img=1 algo=CGNR ganho=sim model=30x30
+[client 187] img=5 algo=CGNR ganho=nao model=60x60
+[client 188] img=2 algo=CGNR ganho=nao model=30x30
+[client 189] img=1 algo=CGNE ganho=sim model=30x30
+[client 190] img=4 algo=CGNR ganho=nao model=60x60
+[client 191] img=3 algo=CGNE ganho=sim model=30x30
+[client 192] img=3 algo=CGNE ganho=nao model=30x30
+[client 193] img=5 algo=CGNE ganho=sim model=60x60
+[client 194] img=3 algo=CGNR ganho=nao model=30x30
+[client 195] img=6 algo=CGNE ganho=nao model=60x60
+[client 196] img=2 algo=CGNR ganho=nao model=30x30
+[client 197] img=6 algo=CGNE ganho=nao model=60x60
+[client 198] img=4 algo=CGNR ganho=nao model=60x60
+[client 199] img=6 algo=CGNR ganho=sim model=60x60
+[client 200] img=1 algo=CGNE ganho=sim model=30x30
+[client 201] img=5 algo=CGNR ganho=sim model=60x60
+[client 202] img=5 algo=CGNR ganho=nao model=60x60
+[client 203] img=2 algo=CGNE ganho=sim model=30x30
+[client 205] img=6 algo=CGNE ganho=sim model=60x60
+[client 206] img=1 algo=CGNR ganho=nao model=30x30
+[client 204] img=4 algo=CGNR ganho=sim model=60x60
+[client 209] img=5 algo=CGNR ganho=sim model=60x60[client 208] img=4 algo=CGNE ganho=sim model=60x60
+
+[client 210] img=1 algo=CGNE ganho=nao model=30x30
+[client 207] img=4 algo=CGNE ganho=sim model=60x60
+[client 211] img=5 algo=CGNE ganho=sim model=60x60
+[client 212] img=2 algo=CGNR ganho=sim model=30x30
+[client 213] img=2 algo=CGNR ganho=sim model=30x30
+[client 214] img=5 algo=CGNR ganho=nao model=60x60
+[client 215] img=1 algo=CGNE ganho=sim model=30x30
+[client 217] img=6 algo=CGNR ganho=sim model=60x60
+[client 216] img=1 algo=CGNE ganho=nao model=30x30
+[client 218] img=5 algo=CGNR ganho=sim model=60x60
+[client 219] img=6 algo=CGNR ganho=sim model=60x60
+[client 220] img=5 algo=CGNR ganho=sim model=60x60
+[client 221] img=1 algo=CGNR ganho=nao model=30x30
+[client 222] img=5 algo=CGNE ganho=sim model=60x60
+[client 223] img=5 algo=CGNR ganho=sim model=60x60
+[client 224] img=5 algo=CGNR ganho=nao model=60x60
+[client 225] img=5 algo=CGNE ganho=sim model=60x60
+[client 226] img=6 algo=CGNE ganho=sim model=60x60
+[client 227] img=3 algo=CGNR ganho=sim model=30x30
+[client 228] img=1 algo=CGNR ganho=sim model=30x30
+[client 230] img=1 algo=CGNE ganho=nao model=30x30
+[client 229] img=3 algo=CGNR ganho=nao model=30x30
+[client 231] img=6 algo=CGNR ganho=sim model=60x60
+[client 233] img=3 algo=CGNR ganho=nao model=30x30
+[client 232] img=5 algo=CGNE ganho=sim model=60x60
+[client 234] img=6 algo=CGNR ganho=sim model=60x60
+[client 235] img=2 algo=CGNE ganho=sim model=30x30
+[client 236] img=1 algo=CGNE ganho=nao model=30x30
+[client 237] img=2 algo=CGNE ganho=nao model=30x30
+[client 238] img=2 algo=CGNR ganho=nao model=30x30
+[client 239] img=6 algo=CGNE ganho=sim model=60x60
+[client 240] img=6 algo=CGNR ganho=nao model=60x60
+[client 242] img=4 algo=CGNE ganho=sim model=60x60
+[client 241] img=4 algo=CGNR ganho=sim model=60x60
+[client 243] img=2 algo=CGNR ganho=sim model=30x30
+[client 244] img=4 algo=CGNE ganho=nao model=60x60
+[client 245] img=1 algo=CGNE ganho=sim model=30x30
+[client 246] img=2 algo=CGNE ganho=sim model=30x30
+[client 56] reconstructed_i12500_client56_CGNE_img2.png iters=3 eps=7.875e-05 t=0.075s OK
+[client 32] reconstructed_i12500_client32_CGNE_img1.png iters=2 eps=8.353e-05 t=0.102s OK
+[client 21] reconstructed_i12500_client21_CGNR_img5.png iters=5 eps=9.525e-05 t=1.306s OK
+[client 22] reconstructed_i12500_client22_CGNE_img3.png iters=10 eps=3.275e+08 t=0.404s NAO-CONVERGIU
+[client 247] img=1 algo=CGNE ganho=sim model=30x30
+[client 248] img=4 algo=CGNE ganho=sim model=60x60
+[client 250] img=4 algo=CGNR ganho=nao model=60x60
+[client 249] img=1 algo=CGNE ganho=nao model=30x30
+[client 251] img=1 algo=CGNR ganho=nao model=30x30
+[client 252] img=3 algo=CGNE ganho=sim model=30x30
+[client 253] img=6 algo=CGNR ganho=sim model=60x60
+[client 254] img=5 algo=CGNE ganho=sim model=60x60
+[client 255] img=4 algo=CGNE ganho=sim model=60x60
+[client 256] img=4 algo=CGNR ganho=nao model=60x60
+[client 105] reconstructed_i12500_client105_CGNE_img6.png iters=10 eps=8.749e+05 t=4.804s NAO-CONVERGIU
+[client 258] img=2 algo=CGNR ganho=nao model=30x30
+[client 259] img=2 algo=CGNR ganho=nao model=30x30
+[client 257] img=3 algo=CGNR ganho=sim model=30x30
+[client 260] img=1 algo=CGNR ganho=nao model=30x30
+[client 261] img=1 algo=CGNR ganho=sim model=30x30
+[client 262] img=5 algo=CGNR ganho=nao model=60x60
+[client 263] img=3 algo=CGNE ganho=nao model=30x30
+[client 5] reconstructed_i12500_client5_CGNE_img5.png iters=10 eps=9.370e+02 t=2.762s NAO-CONVERGIU
+[client 264] img=1 algo=CGNR ganho=nao model=30x30
+[client 265] img=1 algo=CGNR ganho=sim model=30x30
+[client 266] img=6 algo=CGNE ganho=sim model=60x60
+[client 267] img=2 algo=CGNR ganho=nao model=30x30
+[client 268] img=6 algo=CGNE ganho=sim model=60x60
+[client 270] img=6 algo=CGNR ganho=sim model=60x60
+[client 271] img=1 algo=CGNR ganho=sim model=30x30
+[client 269] img=5 algo=CGNE ganho=sim model=60x60
+[client 273] img=5 algo=CGNE ganho=nao model=60x60
+[client 274] img=5 algo=CGNE ganho=nao model=60x60
+[client 272] img=2 algo=CGNE ganho=sim model=30x30
+[client 275] img=5 algo=CGNE ganho=sim model=60x60
+[client 276] img=1 algo=CGNR ganho=nao model=30x30
+[client 277] img=5 algo=CGNE ganho=sim model=60x60
+[client 63] reconstructed_i12500_client63_CGNR_img6.png iters=10 eps=7.160e+09 t=2.797s NAO-CONVERGIU
+[client 279] img=3 algo=CGNR ganho=sim model=30x30
+[client 278] img=4 algo=CGNR ganho=sim model=60x60
+[client 280] img=3 algo=CGNE ganho=nao model=30x30
+[client 48] reconstructed_i12500_client48_CGNR_img5.png iters=5 eps=9.525e-05 t=3.055s OK
+[client 281] img=5 algo=CGNR ganho=sim model=60x60
+[client 282] img=1 algo=CGNR ganho=nao model=30x30
+[client 284] img=4 algo=CGNR ganho=sim model=60x60
+[client 283] img=3 algo=CGNR ganho=nao model=30x30
+[client 285] img=5 algo=CGNR ganho=sim model=60x60
+[client 286] img=3 algo=CGNR ganho=nao model=30x30
+[client 287] img=6 algo=CGNR ganho=nao model=60x60
+[client 288] img=5 algo=CGNE ganho=nao model=60x60
+[client 289] img=2 algo=CGNR ganho=nao model=30x30
+[client 133] reconstructed_i12500_client133_CGNE_img3.png iters=10 eps=3.506e+13 t=0.636s NAO-CONVERGIU
+[client 290] img=6 algo=CGNR ganho=sim model=60x60
+[client 291] img=2 algo=CGNR ganho=sim model=30x30
+[client 292] img=4 algo=CGNR ganho=sim model=60x60
+[client 293] img=5 algo=CGNR ganho=sim model=60x60
+[client 294] img=5 algo=CGNE ganho=nao model=60x60
+[client 295] img=2 algo=CGNR ganho=sim model=30x30
+[client 296] img=5 algo=CGNR ganho=nao model=60x60
+[client 297] img=3 algo=CGNR ganho=sim model=30x30
+[client 298] img=5 algo=CGNR ganho=sim model=60x60
+[client 299] img=3 algo=CGNE ganho=sim model=30x30
+[client 300] img=6 algo=CGNE ganho=sim model=60x60
+[client 116] reconstructed_i12500_client116_CGNR_img5.png iters=10 eps=8.758e+01 t=8.559s NAO-CONVERGIU
+[client 126] reconstructed_i12500_client126_CGNR_img5.png iters=10 eps=8.758e+01 t=2.515s NAO-CONVERGIU
+[client 82] reconstructed_i12500_client82_CGNE_img2.png iters=3 eps=7.875e-05 t=0.289s OK
+[client 62] reconstructed_i12500_client62_CGNE_img2.png iters=10 eps=1.552e+02 t=1.221s NAO-CONVERGIU
+[client 122] reconstructed_i12500_client122_CGNR_img4.png iters=4 eps=8.141e-05 t=1.146s OK
+[client 49] reconstructed_i12500_client49_CGNE_img5.png iters=10 eps=9.049e-05 t=6.385s OK
+[client 24] reconstructed_i12500_client24_CGNR_img5.png iters=5 eps=9.525e-05 t=1.253s OK
+[client 160] reconstructed_i12500_client160_CGNE_img6.png iters=10 eps=8.749e+05 t=2.864s NAO-CONVERGIU
+[client 41] reconstructed_i12500_client41_CGNR_img4.png iters=4 eps=8.141e-05 t=0.806s OK
+[client 23] reconstructed_i12500_client23_CGNE_img5.png iters=10 eps=9.370e+02 t=9.964s NAO-CONVERGIU
+[client 61] reconstructed_i12500_client61_CGNE_img4.png iters=10 eps=4.698e+02 t=3.146s NAO-CONVERGIU
+[client 13] reconstructed_i12500_client13_CGNE_img3.png iters=10 eps=3.506e+13 t=0.336s NAO-CONVERGIU
+[client 39] reconstructed_i12500_client39_CGNR_img4.png iters=10 eps=4.718e+01 t=2.836s NAO-CONVERGIU
+[client 40] reconstructed_i12500_client40_CGNE_img5.png iters=10 eps=9.049e-05 t=11.059s OK
+[client 163] reconstructed_i12500_client163_CGNR_img5.png iters=5 eps=9.525e-05 t=1.735s OK
+[client 93] reconstructed_i12500_client93_CGNR_img1.png iters=10 eps=1.410e+01 t=0.487s NAO-CONVERGIU
+[client 54] reconstructed_i12500_client54_CGNR_img5.png iters=5 eps=9.525e-05 t=1.622s OK
+[client 99] reconstructed_i12500_client99_CGNE_img6.png iters=10 eps=8.749e+05 t=11.428s NAO-CONVERGIU
+[client 134] reconstructed_i12500_client134_CGNR_img4.png iters=4 eps=8.141e-05 t=1.303s OK
+[client 58] reconstructed_i12500_client58_CGNR_img2.png iters=2 eps=8.952e-05 t=0.324s OK
+[client 87] reconstructed_i12500_client87_CGNR_img2.png iters=2 eps=8.952e-05 t=0.203s OK
+[client 142] reconstructed_i12500_client142_CGNR_img4.png iters=4 eps=8.141e-05 t=1.290s OK
+[client 111] reconstructed_i12500_client111_CGNE_img5.png iters=10 eps=9.049e-05 t=4.385s OK
+[client 11] reconstructed_i12500_client11_CGNR_img1.png iters=10 eps=1.410e+01 t=1.455s NAO-CONVERGIU
+[client 124] reconstructed_i12500_client124_CGNR_img6.png iters=10 eps=2.536e+04 t=7.923s NAO-CONVERGIU
+[client 156] reconstructed_i12500_client156_CGNE_img6.png iters=10 eps=2.569e+11 t=5.335s NAO-CONVERGIU
+[client 8] reconstructed_i12500_client8_CGNR_img4.png iters=4 eps=8.141e-05 t=2.032s OK
+[client 89] reconstructed_i12500_client89_CGNR_img4.png iters=4 eps=8.141e-05 t=2.030s OK
+[client 45] reconstructed_i12500_client45_CGNE_img3.png iters=10 eps=3.506e+13 t=1.074s NAO-CONVERGIU
+[client 166] reconstructed_i12500_client166_CGNR_img4.png iters=4 eps=8.141e-05 t=1.995s OK
+[client 4] reconstructed_i12500_client4_CGNE_img4.png iters=10 eps=4.698e+02 t=12.563s NAO-CONVERGIU
+[client 18] reconstructed_i12500_client18_CGNR_img1.png iters=10 eps=1.410e+01 t=2.018s NAO-CONVERGIU
+[client 50] reconstructed_i12500_client50_CGNR_img4.png iters=10 eps=4.718e+01 t=4.843s NAO-CONVERGIU
+D:\Projects\Desenvolvimento-Integrado-de-sistemas\client.py:167: RuntimeWarning: More than 20 figures have been opened. Figures created through the pyplot interface (`matplotlib.pyplot.figure`) are retained until explicitly closed and may consume too much memory. (To control this warning, see the rcParam `figure.max_open_warning`). Consider using `matplotlib.pyplot.close()`.
+  fig, ax = plt.subplots(figsize=(5.5, 6.3))
+[client 95] reconstructed_i12500_client95_CGNE_img5.png iters=10 eps=9.049e-05 t=6.520s OK
+[client 64] reconstructed_i12500_client64_CGNR_img6.png iters=10 eps=2.536e+04 t=12.394s NAO-CONVERGIU
+[client 110] reconstructed_i12500_client110_CGNR_img1.png iters=2 eps=7.063e-05 t=0.397s OK
+[client 119] reconstructed_i12500_client119_CGNR_img6.png iters=10 eps=7.160e+09 t=4.234s NAO-CONVERGIU
+[client 14] reconstructed_i12500_client14_CGNE_img6.png iters=10 eps=8.749e+05 t=11.818s NAO-CONVERGIU
+[client 88] reconstructed_i12500_client88_CGNE_img3.png iters=10 eps=3.506e+13 t=1.077s NAO-CONVERGIU
+[client 91] reconstructed_i12500_client91_CGNE_img6.png iters=10 eps=8.749e+05 t=4.674s NAO-CONVERGIU
+[client 68] reconstructed_i12500_client68_CGNR_img6.png iters=10 eps=2.536e+04 t=11.403s NAO-CONVERGIU
+[client 12] reconstructed_i12500_client12_CGNR_img6.png iters=10 eps=2.536e+04 t=7.378s NAO-CONVERGIU
+[client 76] reconstructed_i12500_client76_CGNE_img1.png iters=2 eps=8.353e-05 t=0.421s OK
+[client 26] reconstructed_i12500_client26_CGNE_img6.png iters=10 eps=8.749e+05 t=7.594s NAO-CONVERGIU
+[client 78] reconstructed_i12500_client78_CGNE_img6.png iters=10 eps=8.749e+05 t=12.307s NAO-CONVERGIU
+[client 1] reconstructed_i12500_client1_CGNE_img1.png iters=2 eps=8.353e-05 t=0.378s OK
+[client 129] reconstructed_i12500_client129_CGNE_img5.png iters=10 eps=9.370e+02 t=5.929s NAO-CONVERGIU
+[client 86] reconstructed_i12500_client86_CGNR_img5.png iters=10 eps=8.758e+01 t=11.493s NAO-CONVERGIU
+[client 145] reconstructed_i12500_client145_CGNE_img2.png iters=10 eps=1.552e+02 t=0.757s NAO-CONVERGIU
+[client 2] reconstructed_i12500_client2_CGNE_img4.png iters=10 eps=4.698e+02 t=7.972s NAO-CONVERGIU
+[client 77] reconstructed_i12500_client77_CGNR_img5.png iters=5 eps=9.525e-05 t=5.532s OK
+[client 81] reconstructed_i12500_client81_CGNR_img1.png iters=10 eps=1.410e+01 t=0.766s NAO-CONVERGIU
+[client 170] reconstructed_i12500_client170_CGNE_img6.png iters=10 eps=2.569e+11 t=7.629s NAO-CONVERGIU
+[client 20] reconstructed_i12500_client20_CGNE_img6.png iters=10 eps=2.569e+11 t=12.930s NAO-CONVERGIU
+[client 112] reconstructed_i12500_client112_CGNR_img3.png iters=10 eps=7.165e+11 t=1.166s NAO-CONVERGIU
+[client 143] reconstructed_i12500_client143_CGNE_img3.png iters=10 eps=3.275e+08 t=3.031s NAO-CONVERGIU
+[client 106] reconstructed_i12500_client106_CGNE_img4.png iters=10 eps=4.698e+02 t=6.885s NAO-CONVERGIU
+[client 165] reconstructed_i12500_client165_CGNE_img5.png iters=10 eps=9.049e-05 t=7.068s OK
+[client 115] reconstructed_i12500_client115_CGNR_img5.png iters=10 eps=8.758e+01 t=12.372s NAO-CONVERGIU
+[client 146] reconstructed_i12500_client146_CGNR_img4.png iters=10 eps=4.718e+01 t=12.191s NAO-CONVERGIU
+[client 69] reconstructed_i12500_client69_CGNR_img2.png iters=2 eps=8.952e-05 t=0.325s OK
+[client 107] reconstructed_i12500_client107_CGNE_img6.png iters=10 eps=8.749e+05 t=7.155s NAO-CONVERGIU
+[client 113] reconstructed_i12500_client113_CGNR_img4.png iters=4 eps=8.141e-05 t=2.634s OK
+[client 117] reconstructed_i12500_client117_CGNE_img4.png iters=10 eps=4.698e+02 t=6.284s NAO-CONVERGIU
+[client 31] reconstructed_i12500_client31_CGNR_img5.png iters=10 eps=8.758e+01 t=7.285s NAO-CONVERGIU
+[client 108] reconstructed_i12500_client108_CGNE_img1.png iters=2 eps=8.353e-05 t=0.544s OK
+[client 153] reconstructed_i12500_client153_CGNR_img4.png iters=4 eps=8.141e-05 t=5.080s OK
+[client 85] reconstructed_i12500_client85_CGNR_img4.png iters=4 eps=8.141e-05 t=4.410s OK
+[client 79] reconstructed_i12500_client79_CGNE_img1.png iters=10 eps=2.818e+02 t=1.498s NAO-CONVERGIU
+[client 103] reconstructed_i12500_client103_CGNE_img6.png iters=10 eps=8.749e+05 t=13.858s NAO-CONVERGIU
+[client 154] reconstructed_i12500_client154_CGNR_img4.png iters=4 eps=8.141e-05 t=2.766s OK
+[client 19] reconstructed_i12500_client19_CGNE_img5.png iters=10 eps=9.049e-05 t=7.466s OK
+[client 29] reconstructed_i12500_client29_CGNE_img1.png iters=2 eps=8.353e-05 t=0.396s OK
+[client 30] reconstructed_i12500_client30_CGNE_img3.png iters=10 eps=3.275e+08 t=1.361s NAO-CONVERGIU
+[client 132] reconstructed_i12500_client132_CGNE_img6.png iters=10 eps=2.569e+11 t=7.300s NAO-CONVERGIU
+[client 152] reconstructed_i12500_client152_CGNR_img6.png iters=10 eps=7.160e+09 t=6.882s NAO-CONVERGIU
+[client 127] reconstructed_i12500_client127_CGNE_img1.png iters=2 eps=8.353e-05 t=0.266s OK
+[client 60] reconstructed_i12500_client60_CGNE_img5.png iters=10 eps=9.370e+02 t=5.985s NAO-CONVERGIU
+[client 44] reconstructed_i12500_client44_CGNR_img1.png iters=10 eps=1.410e+01 t=0.957s NAO-CONVERGIU
+[client 144] reconstructed_i12500_client144_CGNE_img4.png iters=10 eps=4.698e+02 t=12.194s NAO-CONVERGIU
+[client 72] reconstructed_i12500_client72_CGNE_img4.png iters=6 eps=9.258e-05 t=2.912s OK
+[client 114] reconstructed_i12500_client114_CGNR_img4.png iters=4 eps=8.141e-05 t=2.622s OK
+[client 42] reconstructed_i12500_client42_CGNR_img2.png iters=10 eps=1.341e+01 t=2.333s NAO-CONVERGIU
+[client 167] reconstructed_i12500_client167_CGNE_img3.png iters=10 eps=3.275e+08 t=0.995s NAO-CONVERGIU
+[client 131] reconstructed_i12500_client131_CGNR_img2.png iters=2 eps=8.952e-05 t=0.428s OK
+[client 177] reconstructed_i12500_client177_CGNE_img6.png iters=10 eps=8.749e+05 t=12.111s NAO-CONVERGIU
+[client 147] reconstructed_i12500_client147_CGNR_img5.png iters=5 eps=9.525e-05 t=2.233s OK
+[client 101] reconstructed_i12500_client101_CGNR_img3.png iters=10 eps=7.165e+11 t=3.146s NAO-CONVERGIU
+[client 90] reconstructed_i12500_client90_CGNR_img2.png iters=10 eps=1.341e+01 t=0.982s NAO-CONVERGIU
+[client 80] reconstructed_i12500_client80_CGNE_img2.png iters=10 eps=1.552e+02 t=1.766s NAO-CONVERGIU
+[client 52] reconstructed_i12500_client52_CGNE_img3.png iters=10 eps=3.506e+13 t=2.775s NAO-CONVERGIU
+[client 168] reconstructed_i12500_client168_CGNR_img2.png iters=2 eps=8.952e-05 t=0.196s OK
+[client 148] reconstructed_i12500_client148_CGNR_img2.png iters=2 eps=8.952e-05 t=0.218s OK
+[client 10] reconstructed_i12500_client10_CGNR_img6.png iters=10 eps=2.536e+04 t=11.710s NAO-CONVERGIU
+[client 27] reconstructed_i12500_client27_CGNR_img1.png iters=10 eps=1.410e+01 t=2.575s NAO-CONVERGIU
+[client 135] reconstructed_i12500_client135_CGNE_img5.png iters=10 eps=9.049e-05 t=4.569s OK
+[client 158] reconstructed_i12500_client158_CGNE_img6.png iters=10 eps=2.569e+11 t=5.779s NAO-CONVERGIU
+[client 92] reconstructed_i12500_client92_CGNE_img4.png iters=10 eps=4.698e+02 t=12.150s NAO-CONVERGIU
+[client 16] reconstructed_i12500_client16_CGNE_img4.png iters=10 eps=4.698e+02 t=5.571s NAO-CONVERGIU
+[client 66] reconstructed_i12500_client66_CGNR_img6.png iters=10 eps=2.536e+04 t=5.892s NAO-CONVERGIU
+[client 137] reconstructed_i12500_client137_CGNR_img5.png iters=10 eps=8.758e+01 t=6.438s NAO-CONVERGIU
+[client 74] reconstructed_i12500_client74_CGNE_img5.png iters=10 eps=9.049e-05 t=11.655s OK
+[client 97] reconstructed_i12500_client97_CGNE_img4.png iters=10 eps=4.698e+02 t=11.973s NAO-CONVERGIU
+[client 59] reconstructed_i12500_client59_CGNE_img1.png iters=2 eps=8.353e-05 t=0.151s OK
+[client 162] reconstructed_i12500_client162_CGNR_img5.png iters=10 eps=8.758e+01 t=5.810s NAO-CONVERGIU
+[client 136] reconstructed_i12500_client136_CGNR_img6.png iters=10 eps=2.536e+04 t=5.982s NAO-CONVERGIU
+[client 46] reconstructed_i12500_client46_CGNE_img5.png iters=10 eps=9.049e-05 t=11.737s OK
+[client 25] reconstructed_i12500_client25_CGNE_img5.png iters=10 eps=9.370e+02 t=6.114s NAO-CONVERGIU
+[client 125] reconstructed_i12500_client125_CGNR_img1.png iters=10 eps=1.410e+01 t=2.514s NAO-CONVERGIU
+[client 43] reconstructed_i12500_client43_CGNR_img5.png iters=10 eps=8.758e+01 t=6.588s NAO-CONVERGIU
+[client 141] reconstructed_i12500_client141_CGNR_img3.png iters=10 eps=7.165e+11 t=1.563s NAO-CONVERGIU
+[client 3] reconstructed_i12500_client3_CGNR_img4.png iters=4 eps=8.141e-05 t=2.423s OK
+[client 123] reconstructed_i12500_client123_CGNE_img2.png iters=10 eps=1.552e+02 t=1.345s NAO-CONVERGIU
+[client 83] reconstructed_i12500_client83_CGNE_img5.png iters=10 eps=9.049e-05 t=6.605s OK
+[client 104] reconstructed_i12500_client104_CGNE_img2.png iters=10 eps=1.552e+02 t=1.704s NAO-CONVERGIU
+[client 150] reconstructed_i12500_client150_CGNE_img2.png iters=3 eps=7.875e-05 t=0.522s OK
+[client 118] reconstructed_i12500_client118_CGNR_img6.png iters=10 eps=7.160e+09 t=10.964s NAO-CONVERGIU
+[client 70] reconstructed_i12500_client70_CGNE_img5.png iters=10 eps=9.370e+02 t=11.388s NAO-CONVERGIU
+[client 28] reconstructed_i12500_client28_CGNR_img6.png iters=10 eps=2.536e+04 t=10.630s NAO-CONVERGIU
+[client 172] reconstructed_i12500_client172_CGNE_img5.png iters=10 eps=9.049e-05 t=5.260s OK
+[client 102] reconstructed_i12500_client102_CGNR_img6.png iters=10 eps=2.536e+04 t=10.098s NAO-CONVERGIU
+[client 157] reconstructed_i12500_client157_CGNE_img5.png iters=10 eps=9.370e+02 t=5.679s NAO-CONVERGIU
+[client 51] reconstructed_i12500_client51_CGNE_img2.png iters=10 eps=1.552e+02 t=1.034s NAO-CONVERGIU
+[client 53] reconstructed_i12500_client53_CGNE_img2.png iters=3 eps=7.875e-05 t=0.655s OK
+[client 109] reconstructed_i12500_client109_CGNR_img3.png iters=10 eps=7.165e+11 t=2.191s NAO-CONVERGIU
+[client 121] reconstructed_i12500_client121_CGNE_img5.png iters=10 eps=9.049e-05 t=10.254s OK
+[client 38] reconstructed_i12500_client38_CGNR_img3.png iters=10 eps=6.323e+06 t=0.858s NAO-CONVERGIU
+[client 7] reconstructed_i12500_client7_CGNR_img4.png iters=4 eps=8.141e-05 t=1.642s OK
+[client 151] reconstructed_i12500_client151_CGNE_img4.png iters=6 eps=9.258e-05 t=6.960s OK
+[client 67] reconstructed_i12500_client67_CGNE_img5.png iters=10 eps=9.049e-05 t=5.584s OK
+[client 84] reconstructed_i12500_client84_CGNE_img6.png iters=10 eps=2.569e+11 t=9.847s NAO-CONVERGIU
+[client 47] reconstructed_i12500_client47_CGNR_img6.png iters=10 eps=7.160e+09 t=6.556s NAO-CONVERGIU
+[client 149] reconstructed_i12500_client149_CGNR_img4.png iters=4 eps=8.141e-05 t=2.479s OK
+[client 55] reconstructed_i12500_client55_CGNE_img3.png iters=10 eps=3.275e+08 t=2.867s NAO-CONVERGIU
+[client 57] reconstructed_i12500_client57_CGNE_img1.png iters=2 eps=8.353e-05 t=0.372s OK
+[client 140] reconstructed_i12500_client140_CGNR_img1.png iters=2 eps=7.063e-05 t=0.138s OK
+[client 9] reconstructed_i12500_client9_CGNR_img2.png iters=2 eps=8.952e-05 t=0.277s OK
+[client 17] reconstructed_i12500_client17_CGNR_img2.png iters=10 eps=1.341e+01 t=1.220s NAO-CONVERGIU
+[client 100] reconstructed_i12500_client100_CGNR_img1.png iters=10 eps=1.410e+01 t=2.790s NAO-CONVERGIU
+[client 73] reconstructed_i12500_client73_CGNR_img5.png iters=10 eps=8.758e+01 t=5.396s NAO-CONVERGIU
+[client 34] reconstructed_i12500_client34_CGNR_img1.png iters=2 eps=7.063e-05 t=0.558s OK
+[client 139] reconstructed_i12500_client139_CGNR_img3.png iters=10 eps=7.165e+11 t=2.263s NAO-CONVERGIU
+[client 120] reconstructed_i12500_client120_CGNR_img1.png iters=10 eps=1.410e+01 t=1.299s NAO-CONVERGIU
+[client 130] reconstructed_i12500_client130_CGNE_img2.png iters=10 eps=1.552e+02 t=1.741s NAO-CONVERGIU
+[client 155] reconstructed_i12500_client155_CGNE_img6.png iters=10 eps=2.569e+11 t=9.086s NAO-CONVERGIU
+[client 94] reconstructed_i12500_client94_CGNE_img4.png iters=6 eps=9.258e-05 t=1.317s OK
+[client 171] reconstructed_i12500_client171_CGNE_img3.png iters=10 eps=3.275e+08 t=1.597s NAO-CONVERGIU
+[client 37] reconstructed_i12500_client37_CGNE_img2.png iters=10 eps=1.552e+02 t=2.065s NAO-CONVERGIU
+[client 161] reconstructed_i12500_client161_CGNE_img5.png iters=10 eps=9.370e+02 t=8.641s NAO-CONVERGIU
+[client 15] reconstructed_i12500_client15_CGNR_img4.png iters=4 eps=8.141e-05 t=3.344s OK
+[client 128] reconstructed_i12500_client128_CGNR_img5.png iters=10 eps=8.758e+01 t=4.027s NAO-CONVERGIU
+[client 98] reconstructed_i12500_client98_CGNR_img6.png iters=10 eps=7.160e+09 t=2.645s NAO-CONVERGIU
+[client 35] reconstructed_i12500_client35_CGNR_img1.png iters=10 eps=1.410e+01 t=0.892s NAO-CONVERGIU
+[client 65] reconstructed_i12500_client65_CGNE_img4.png iters=10 eps=4.698e+02 t=3.882s NAO-CONVERGIU
+[client 71] reconstructed_i12500_client71_CGNR_img5.png iters=10 eps=8.758e+01 t=3.925s NAO-CONVERGIU
+[client 164] reconstructed_i12500_client164_CGNR_img2.png iters=2 eps=8.952e-05 t=0.236s OK
+[client 159] reconstructed_i12500_client159_CGNE_img5.png iters=10 eps=9.370e+02 t=9.633s NAO-CONVERGIU
+[client 33] reconstructed_i12500_client33_CGNR_img4.png iters=4 eps=8.141e-05 t=1.762s OK
+[client 36] reconstructed_i12500_client36_CGNE_img1.png iters=10 eps=2.818e+02 t=0.833s NAO-CONVERGIU
+[client 175] reconstructed_i12500_client175_CGNE_img3.png iters=10 eps=3.275e+08 t=1.952s NAO-CONVERGIU
+[client 178] reconstructed_i12500_client178_CGNE_img6.png iters=10 eps=8.749e+05 t=6.081s NAO-CONVERGIU
+[client 75] reconstructed_i12500_client75_CGNE_img4.png iters=6 eps=9.258e-05 t=4.531s OK
+[client 96] reconstructed_i12500_client96_CGNR_img6.png iters=10 eps=7.160e+09 t=3.562s NAO-CONVERGIU
+[client 6] reconstructed_i12500_client6_CGNE_img3.png iters=10 eps=3.506e+13 t=1.421s NAO-CONVERGIU
+[client 169] reconstructed_i12500_client169_CGNE_img1.png iters=2 eps=8.353e-05 t=0.284s OK
+[client 181] reconstructed_i12500_client181_CGNE_img3.png iters=10 eps=3.506e+13 t=0.905s NAO-CONVERGIU
+[client 138] reconstructed_i12500_client138_CGNE_img6.png iters=10 eps=8.749e+05 t=7.135s NAO-CONVERGIU
+[client 179] reconstructed_i12500_client179_CGNE_img1.png iters=2 eps=8.353e-05 t=0.409s OK
+[client 183] reconstructed_i12500_client183_CGNR_img5.png iters=10 eps=8.758e+01 t=8.970s NAO-CONVERGIU
+[client 176] reconstructed_i12500_client176_CGNR_img3.png iters=10 eps=7.165e+11 t=0.707s NAO-CONVERGIU
+[client 186] reconstructed_i12500_client186_CGNR_img1.png iters=10 eps=1.410e+01 t=1.064s NAO-CONVERGIU
+[client 182] reconstructed_i12500_client182_CGNR_img1.png iters=10 eps=1.410e+01 t=1.934s NAO-CONVERGIU
+[client 174] reconstructed_i12500_client174_CGNR_img6.png iters=10 eps=7.160e+09 t=3.420s NAO-CONVERGIU
+[client 185] reconstructed_i12500_client185_CGNR_img6.png iters=10 eps=2.536e+04 t=3.207s NAO-CONVERGIU
+[client 189] reconstructed_i12500_client189_CGNE_img1.png iters=10 eps=2.818e+02 t=1.773s NAO-CONVERGIU
+[client 180] reconstructed_i12500_client180_CGNE_img3.png iters=10 eps=3.275e+08 t=2.164s NAO-CONVERGIU
+[client 184] reconstructed_i12500_client184_CGNR_img5.png iters=10 eps=8.758e+01 t=3.812s NAO-CONVERGIU
+[client 173] reconstructed_i12500_client173_CGNE_img6.png iters=10 eps=8.749e+05 t=3.734s NAO-CONVERGIU
+[client 191] reconstructed_i12500_client191_CGNE_img3.png iters=10 eps=3.506e+13 t=2.582s NAO-CONVERGIU
+[client 192] reconstructed_i12500_client192_CGNE_img3.png iters=10 eps=3.275e+08 t=2.612s NAO-CONVERGIU
+[client 188] reconstructed_i12500_client188_CGNR_img2.png iters=2 eps=8.952e-05 t=0.197s OK
+[client 194] reconstructed_i12500_client194_CGNR_img3.png iters=10 eps=6.323e+06 t=2.393s NAO-CONVERGIU
+[client 196] reconstructed_i12500_client196_CGNR_img2.png iters=2 eps=8.952e-05 t=0.206s OK
+[client 190] reconstructed_i12500_client190_CGNR_img4.png iters=4 eps=8.141e-05 t=0.887s OK
+[client 202] reconstructed_i12500_client202_CGNR_img5.png iters=5 eps=9.525e-05 t=3.010s OK
+[client 200] reconstructed_i12500_client200_CGNE_img1.png iters=10 eps=2.818e+02 t=0.702s NAO-CONVERGIU
+[client 198] reconstructed_i12500_client198_CGNR_img4.png iters=4 eps=8.141e-05 t=1.768s OK
+[client 201] reconstructed_i12500_client201_CGNR_img5.png iters=10 eps=8.758e+01 t=3.987s NAO-CONVERGIU
+[client 199] reconstructed_i12500_client199_CGNR_img6.png iters=10 eps=7.160e+09 t=8.208s NAO-CONVERGIU
+[client 203] reconstructed_i12500_client203_CGNE_img2.png iters=10 eps=1.552e+02 t=1.041s NAO-CONVERGIU
+[client 204] reconstructed_i12500_client204_CGNR_img4.png iters=10 eps=4.718e+01 t=7.341s NAO-CONVERGIU
+[client 210] reconstructed_i12500_client210_CGNE_img1.png iters=2 eps=8.353e-05 t=0.269s OK
+[client 208] reconstructed_i12500_client208_CGNE_img4.png iters=10 eps=4.698e+02 t=5.008s NAO-CONVERGIU
+[client 195] reconstructed_i12500_client195_CGNE_img6.png iters=10 eps=8.749e+05 t=8.606s NAO-CONVERGIU
+[client 187] reconstructed_i12500_client187_CGNR_img5.png iters=5 eps=9.525e-05 t=5.452s OK
+[client 197] reconstructed_i12500_client197_CGNE_img6.png iters=10 eps=8.749e+05 t=5.045s NAO-CONVERGIU
+[client 207] reconstructed_i12500_client207_CGNE_img4.png iters=10 eps=4.698e+02 t=4.089s NAO-CONVERGIU
+[client 193] reconstructed_i12500_client193_CGNE_img5.png iters=10 eps=9.370e+02 t=9.252s NAO-CONVERGIU
+[client 206] reconstructed_i12500_client206_CGNR_img1.png iters=2 eps=7.063e-05 t=0.618s OK
+[client 211] reconstructed_i12500_client211_CGNE_img5.png iters=10 eps=9.370e+02 t=11.297s NAO-CONVERGIU
+[client 209] reconstructed_i12500_client209_CGNR_img5.png iters=10 eps=8.758e+01 t=10.814s NAO-CONVERGIU
+[client 212] reconstructed_i12500_client212_CGNR_img2.png iters=10 eps=1.341e+01 t=1.599s NAO-CONVERGIU
+[client 213] reconstructed_i12500_client213_CGNR_img2.png iters=10 eps=1.341e+01 t=3.335s NAO-CONVERGIU
+[client 215] reconstructed_i12500_client215_CGNE_img1.png iters=10 eps=2.818e+02 t=1.298s NAO-CONVERGIU
+[client 216] reconstructed_i12500_client216_CGNE_img1.png iters=2 eps=8.353e-05 t=0.287s OK
+[client 217] reconstructed_i12500_client217_CGNR_img6.png iters=10 eps=7.160e+09 t=10.069s NAO-CONVERGIU
+[client 214] reconstructed_i12500_client214_CGNR_img5.png iters=5 eps=9.525e-05 t=5.276s OK
+[client 205] reconstructed_i12500_client205_CGNE_img6.png iters=10 eps=2.569e+11 t=4.674s NAO-CONVERGIU
+[client 219] reconstructed_i12500_client219_CGNR_img6.png iters=10 eps=7.160e+09 t=9.674s NAO-CONVERGIU
+[client 218] reconstructed_i12500_client218_CGNR_img5.png iters=10 eps=8.758e+01 t=6.893s NAO-CONVERGIU
+[client 220] reconstructed_i12500_client220_CGNR_img5.png iters=10 eps=8.758e+01 t=7.406s NAO-CONVERGIU
+[client 221] reconstructed_i12500_client221_CGNR_img1.png iters=2 eps=7.063e-05 t=0.089s OK
+[client 222] reconstructed_i12500_client222_CGNE_img5.png iters=10 eps=9.370e+02 t=7.816s NAO-CONVERGIU
+[client 230] reconstructed_i12500_client230_CGNE_img1.png iters=2 eps=8.353e-05 t=0.426s OK
+[client 228] reconstructed_i12500_client228_CGNR_img1.png iters=10 eps=1.410e+01 t=0.730s NAO-CONVERGIU
+[client 225] reconstructed_i12500_client225_CGNE_img5.png iters=10 eps=9.370e+02 t=3.865s NAO-CONVERGIU
+[client 227] reconstructed_i12500_client227_CGNR_img3.png iters=10 eps=7.165e+11 t=1.230s NAO-CONVERGIU
+[client 226] reconstructed_i12500_client226_CGNE_img6.png iters=10 eps=2.569e+11 t=3.583s NAO-CONVERGIU
+[client 235] reconstructed_i12500_client235_CGNE_img2.png iters=10 eps=1.552e+02 t=0.709s NAO-CONVERGIU
+[client 224] reconstructed_i12500_client224_CGNR_img5.png iters=5 eps=9.525e-05 t=3.455s OK
+[client 229] reconstructed_i12500_client229_CGNR_img3.png iters=10 eps=6.323e+06 t=2.089s NAO-CONVERGIU
+[client 223] reconstructed_i12500_client223_CGNR_img5.png iters=10 eps=8.758e+01 t=3.386s NAO-CONVERGIU
+[client 232] reconstructed_i12500_client232_CGNE_img5.png iters=10 eps=9.370e+02 t=3.166s NAO-CONVERGIU
+[client 233] reconstructed_i12500_client233_CGNR_img3.png iters=10 eps=6.323e+06 t=1.907s NAO-CONVERGIU
+[client 231] reconstructed_i12500_client231_CGNR_img6.png iters=10 eps=7.160e+09 t=6.720s NAO-CONVERGIU
+[client 234] reconstructed_i12500_client234_CGNR_img6.png iters=10 eps=7.160e+09 t=3.165s NAO-CONVERGIU
+[client 239] reconstructed_i12500_client239_CGNE_img6.png iters=10 eps=2.569e+11 t=8.138s NAO-CONVERGIU
+[client 238] reconstructed_i12500_client238_CGNR_img2.png iters=2 eps=8.952e-05 t=0.319s OK
+[client 237] reconstructed_i12500_client237_CGNE_img2.png iters=3 eps=7.875e-05 t=0.479s OK
+[client 242] reconstructed_i12500_client242_CGNE_img4.png iters=10 eps=4.698e+02 t=3.660s NAO-CONVERGIU
+[client 245] reconstructed_i12500_client245_CGNE_img1.png iters=10 eps=2.818e+02 t=1.936s NAO-CONVERGIU
+[client 244] reconstructed_i12500_client244_CGNE_img4.png iters=6 eps=9.258e-05 t=2.219s OK
+[client 241] reconstructed_i12500_client241_CGNR_img4.png iters=10 eps=4.718e+01 t=6.926s NAO-CONVERGIU
+[client 236] reconstructed_i12500_client236_CGNE_img1.png iters=2 eps=8.353e-05 t=0.502s OK
+[client 246] reconstructed_i12500_client246_CGNE_img2.png iters=10 eps=1.552e+02 t=1.005s NAO-CONVERGIU
+[client 243] reconstructed_i12500_client243_CGNR_img2.png iters=10 eps=1.341e+01 t=1.731s NAO-CONVERGIU
+[client 240] reconstructed_i12500_client240_CGNR_img6.png iters=10 eps=2.536e+04 t=3.744s NAO-CONVERGIU
+[client 254] reconstructed_i12500_client254_CGNE_img5.png iters=10 eps=9.370e+02 t=5.495s NAO-CONVERGIU
+[client 249] reconstructed_i12500_client249_CGNE_img1.png iters=2 eps=8.353e-05 t=0.339s OK
+[client 248] reconstructed_i12500_client248_CGNE_img4.png iters=10 eps=4.698e+02 t=6.171s NAO-CONVERGIU
+[client 247] reconstructed_i12500_client247_CGNE_img1.png iters=10 eps=2.818e+02 t=1.317s NAO-CONVERGIU
+[client 256] reconstructed_i12500_client256_CGNR_img4.png iters=4 eps=8.141e-05 t=2.593s OK
+[client 250] reconstructed_i12500_client250_CGNR_img4.png iters=4 eps=8.141e-05 t=1.047s OK
+[client 258] reconstructed_i12500_client258_CGNR_img2.png iters=2 eps=8.952e-05 t=0.333s OK
+[client 251] reconstructed_i12500_client251_CGNR_img1.png iters=2 eps=7.063e-05 t=0.122s OK
+[client 260] reconstructed_i12500_client260_CGNR_img1.png iters=2 eps=7.063e-05 t=0.209s OK
+[client 255] reconstructed_i12500_client255_CGNE_img4.png iters=10 eps=4.698e+02 t=5.854s NAO-CONVERGIU
+[client 253] reconstructed_i12500_client253_CGNR_img6.png iters=10 eps=7.160e+09 t=2.430s NAO-CONVERGIU
+[client 252] reconstructed_i12500_client252_CGNE_img3.png iters=10 eps=3.506e+13 t=0.518s NAO-CONVERGIU
+[client 261] reconstructed_i12500_client261_CGNR_img1.png iters=10 eps=1.410e+01 t=1.536s NAO-CONVERGIU
+[client 257] reconstructed_i12500_client257_CGNR_img3.png iters=10 eps=7.165e+11 t=0.544s NAO-CONVERGIU
+[client 266] reconstructed_i12500_client266_CGNE_img6.png iters=10 eps=2.569e+11 t=4.707s NAO-CONVERGIU
+[client 264] reconstructed_i12500_client264_CGNR_img1.png iters=2 eps=7.063e-05 t=0.088s OK
+[client 259] reconstructed_i12500_client259_CGNR_img2.png iters=2 eps=8.952e-05 t=0.053s OK
+[client 263] reconstructed_i12500_client263_CGNE_img3.png iters=10 eps=3.275e+08 t=1.303s NAO-CONVERGIU
+[client 270] reconstructed_i12500_client270_CGNR_img6.png iters=10 eps=7.160e+09 t=5.749s NAO-CONVERGIU
+[client 267] reconstructed_i12500_client267_CGNR_img2.png iters=2 eps=8.952e-05 t=0.120s OK
+[client 268] reconstructed_i12500_client268_CGNE_img6.png iters=10 eps=2.569e+11 t=5.996s NAO-CONVERGIU
+[client 262] reconstructed_i12500_client262_CGNR_img5.png iters=5 eps=9.525e-05 t=2.720s OK
+[client 275] reconstructed_i12500_client275_CGNE_img5.png iters=10 eps=9.370e+02 t=5.876s NAO-CONVERGIU
+[client 276] reconstructed_i12500_client276_CGNR_img1.png iters=2 eps=7.063e-05 t=0.110s OK
+[client 272] reconstructed_i12500_client272_CGNE_img2.png iters=10 eps=1.552e+02 t=0.973s NAO-CONVERGIU
+[client 279] reconstructed_i12500_client279_CGNR_img3.png iters=10 eps=7.165e+11 t=1.051s NAO-CONVERGIU
+[client 273] reconstructed_i12500_client273_CGNE_img5.png iters=10 eps=9.049e-05 t=5.571s OK
+[client 274] reconstructed_i12500_client274_CGNE_img5.png iters=10 eps=9.049e-05 t=5.562s OK
+[client 271] reconstructed_i12500_client271_CGNR_img1.png iters=10 eps=1.410e+01 t=0.674s NAO-CONVERGIU
+[client 265] reconstructed_i12500_client265_CGNR_img1.png iters=10 eps=1.410e+01 t=0.333s NAO-CONVERGIU
+[client 282] reconstructed_i12500_client282_CGNR_img1.png iters=2 eps=7.063e-05 t=0.321s OK
+[client 278] reconstructed_i12500_client278_CGNR_img4.png iters=10 eps=4.718e+01 t=5.681s NAO-CONVERGIU
+[client 280] reconstructed_i12500_client280_CGNE_img3.png iters=10 eps=3.275e+08 t=1.136s NAO-CONVERGIU
+[client 277] reconstructed_i12500_client277_CGNE_img5.png iters=10 eps=9.370e+02 t=5.576s NAO-CONVERGIU
+[client 281] reconstructed_i12500_client281_CGNR_img5.png iters=10 eps=8.758e+01 t=4.933s NAO-CONVERGIU
+[client 269] reconstructed_i12500_client269_CGNE_img5.png iters=10 eps=9.370e+02 t=4.479s NAO-CONVERGIU
+[client 283] reconstructed_i12500_client283_CGNR_img3.png iters=10 eps=6.323e+06 t=1.086s NAO-CONVERGIU
+[client 284] reconstructed_i12500_client284_CGNR_img4.png iters=10 eps=4.718e+01 t=4.948s NAO-CONVERGIU
+[client 289] reconstructed_i12500_client289_CGNR_img2.png iters=2 eps=8.952e-05 t=0.272s OK
+[client 285] reconstructed_i12500_client285_CGNR_img5.png iters=10 eps=8.758e+01 t=5.302s NAO-CONVERGIU
+[client 286] reconstructed_i12500_client286_CGNR_img3.png iters=10 eps=6.323e+06 t=1.129s NAO-CONVERGIU
+[client 293] reconstructed_i12500_client293_CGNR_img5.png iters=10 eps=8.758e+01 t=4.766s NAO-CONVERGIU
+[client 290] reconstructed_i12500_client290_CGNR_img6.png iters=10 eps=7.160e+09 t=4.720s NAO-CONVERGIU
+[client 288] reconstructed_i12500_client288_CGNE_img5.png iters=10 eps=9.049e-05 t=3.746s OK
+[client 291] reconstructed_i12500_client291_CGNR_img2.png iters=10 eps=1.341e+01 t=1.387s NAO-CONVERGIU
+[client 297] reconstructed_i12500_client297_CGNR_img3.png iters=10 eps=7.165e+11 t=1.978s NAO-CONVERGIU
+[client 292] reconstructed_i12500_client292_CGNR_img4.png iters=10 eps=4.718e+01 t=4.918s NAO-CONVERGIU
+[client 294] reconstructed_i12500_client294_CGNE_img5.png iters=10 eps=9.049e-05 t=2.632s OK
+[client 287] reconstructed_i12500_client287_CGNR_img6.png iters=10 eps=2.536e+04 t=5.728s NAO-CONVERGIU
+[client 299] reconstructed_i12500_client299_CGNE_img3.png iters=10 eps=3.506e+13 t=0.536s NAO-CONVERGIU
+[client 295] reconstructed_i12500_client295_CGNR_img2.png iters=10 eps=1.341e+01 t=0.853s NAO-CONVERGIU
+[client 296] reconstructed_i12500_client296_CGNR_img5.png iters=5 eps=9.525e-05 t=3.107s OK
+[client 300] reconstructed_i12500_client300_CGNE_img6.png iters=10 eps=2.569e+11 t=2.425s NAO-CONVERGIU
+[client 298] reconstructed_i12500_client298_CGNR_img5.png iters=10 eps=8.758e+01 t=2.659s NAO-CONVERGIU
+
+All 300 clients finished in 91.41s
+Reconstructions: 300 -> relatorio_i12500.csv
+
+--- Relatório de Envio (PID: 12500) ---
+Total de 300 tarefas tentadas.
+  - Modelo 60x60: 175 Aceitas, 0 Rejeitadas.
+  - Modelo 30x30: 125 Aceitas, 0 Rejeitadas.
+
+-------------------------------------------
+Relatorio de envio -> relatorio_clientes_i12500.txt

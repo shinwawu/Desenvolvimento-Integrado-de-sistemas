@@ -15,6 +15,12 @@ HOST = "127.0.0.1"
 PORT = 8000
 NUM_CLIENTS = int(os.environ.get("NUM_CLIENTS", "300"))
 
+# Seed deterministica para pareamento de workload entre runs (Python vs Rust).
+# Quando setado, cada thread cliente usa seu proprio random.Random(seed * K + client_id)
+# em vez do modulo random global, eliminando race condition no consumo do PRNG.
+# Quando 0, comportamento original (random.module global, nao deterministico).
+RUNNER_SEED = int(os.environ.get("RUNNER_SEED", "0"))
+
 # identificador unico desta instancia do client.py. permite rodar varias instancias
 # em paralelo sem colidir cliente_id no servidor nem sobrescrever os arquivos de saida.
 INSTANCE_ID = f"i{os.getpid()}"
@@ -78,11 +84,12 @@ POLL_TIMEOUT = 120.0
 # modelo assincrono: o cliente dispara o request (apos um intervalo aleatorio),
 # recebe na hora um job_id e depois faz polling ate o resultado ficar pronto.
 # a conexao do POST nao fica presa durante a reconstrucao.
-async def enviar_sinal(cliente_id: str, algorithm: str, model_id: str, g: np.ndarray):
+async def enviar_sinal(cliente_id: str, algorithm: str, model_id: str, g: np.ndarray, rng=random):
 
     url = f"http://{HOST}:{PORT}/reconstruct/{model_id}"
     # intervalo de tempo aleatorio antes de disparar o request
-    await asyncio.sleep(random.uniform(0.1, 0.5))
+    # ele dorme por um tempo entre 100ms e 1500ms
+    await asyncio.sleep(rng.uniform(0.1, 1.5))
     payload = {"g": g.tolist()}
     params = {
         "cliente_id": cliente_id,
@@ -90,34 +97,41 @@ async def enviar_sinal(cliente_id: str, algorithm: str, model_id: str, g: np.nda
         "model_id": model_id,
         "complete": True,
     }
+    # uma Session por cliente: reusa a mesma conexao TCP (keep-alive) no POST e em
+    # todos os polls, em vez de abrir uma conexao nova a cada chamada. Sob centenas
+    # de clientes em polling, isso evita a torrente de conexoes que derruba o proxy.
+    session = requests.Session()
     try:
-        # dispara o sinal; o servidor responde imediatamente com o job_id
-        response = await asyncio.to_thread(
-            requests.post, url, params=params, json=payload
-        )
-        response.raise_for_status()
-        data = response.json()
-    except requests.RequestException as e:
-        print(f"[{cliente_id}] request error: {e}")
-        return {"error": str(e)}
+        try:
+            # dispara o sinal; o servidor responde imediatamente com o job_id
+            response = await asyncio.to_thread(
+                session.post, url, params=params, json=payload
+            )
+            response.raise_for_status()
+            data = response.json()
+        except requests.RequestException as e:
+            print(f"[{cliente_id}] request error: {e}")
+            return {"error": str(e)}
 
-    # se o servidor recusou na validacao (modelo/tamanho), ja vem o erro aqui
-    job_id = data.get("job_id")
-    if not job_id:
-        return data
+        # se o servidor recusou na validacao (modelo/tamanho), ja vem o erro aqui
+        job_id = data.get("job_id")
+        if not job_id:
+            return data
 
-    # consulta o resultado periodicamente ate concluir
-    return await aguardar_resultado(cliente_id, job_id)
+        # consulta o resultado periodicamente ate concluir (mesma Session)
+        return await aguardar_resultado(cliente_id, job_id, session)
+    finally:
+        session.close()
 
 
 # faz polling em GET /result/{job_id} ate o job sair de "pending"
-async def aguardar_resultado(cliente_id: str, job_id: str):
+async def aguardar_resultado(cliente_id: str, job_id: str, session: requests.Session):
     url = f"http://{HOST}:{PORT}/result/{job_id}"
     deadline = time.time() + POLL_TIMEOUT
     while True:
         await asyncio.sleep(POLL_INTERVAL)
         try:
-            response = await asyncio.to_thread(requests.get, url)
+            response = await asyncio.to_thread(session.get, url)
         except requests.RequestException as e:
             print(f"[{cliente_id}] poll error: {e}")
             return {"error": str(e)}
@@ -171,9 +185,14 @@ def salvar_imagem(
 # cada cliente sorteia 1 imagem, 1 algoritmo, e decide aleatoriamente se aplica
 # a correcao de ganho (brilho) antes de enviar
 async def inicializar_cliente(client_id: int):
-    img_random = random.randint(1, 6)
-    algo_random = random.choice(algorithms)
-    aplicar_ganho = random.choice([True, False])
+    # RNG local por thread: elimina race condition no consumo do PRNG global
+    # quando 300 threads sorteiam img/algo/ganho/sleep simultaneamente. Com
+    # RUNNER_SEED setado, garante (img,algo,ganho) deterministico por client_id
+    # em qualquer run, permitindo comparacao pareada Python x Rust.
+    rng = random.Random(RUNNER_SEED * 100003 + client_id) if RUNNER_SEED else random
+    img_random = rng.randint(1, 6)
+    algo_random = rng.choice(algorithms)
+    aplicar_ganho = rng.choice([True, False])
     value = imagem_modelo[img_random]
     print(
         f"[client {client_id}] img={img_random} algo={algo_random} "
@@ -185,7 +204,7 @@ async def inicializar_cliente(client_id: int):
         g = aplicar_ganho_sinal(g)
 
     cliente_id = f"{INSTANCE_ID}-{client_id}"
-    response = await enviar_sinal(cliente_id, algo_random, value["model_id"], g)
+    response = await enviar_sinal(cliente_id, algo_random, value["model_id"], g, rng=rng)
 
     if not isinstance(response, dict):
         print(f"[client {client_id}] sem resposta")

@@ -1,0 +1,96 @@
+[proxy] iniciando 2 workers nas portas [8001, 8002] (max_request/worker=12)
+loaded 60x60: nnz=27637834, transpose nnz=27637834 (faer SparseColMat)
+loaded 60x60: nnz=27637834, transpose nnz=27637834 (faer SparseColMat)
+loaded 30x30: nnz=6371388, transpose nnz=6371388 (faer SparseColMat)
+loaded 30x30: nnz=6371388, transpose nnz=6371388 (faer SparseColMat)
+[worker:8002] server on http://0.0.0.0:8002 (MAX_REQUEST=12, max_iter=10, tol=0.0001)
+[worker:8001] server on http://0.0.0.0:8001 (MAX_REQUEST=12, max_iter=10, tol=0.0001)
+[proxy] 2 workers prontos
+[proxy] escutando em http://0.0.0.0:8000 (sticky routing por cliente_id)
+[memoria 01:52:01] sistema usada=9.91GB disponivel=5.89GB / total=15.80GB (62.7%) | uso da app =1.92GB
+[memoria 01:52:02] sistema usada=10.00GB disponivel=5.80GB / total=15.80GB (63.3%) | uso da app =1.91GB
+[memoria 01:52:03] sistema usada=10.14GB disponivel=5.65GB / total=15.80GB (64.2%) | uso da app =1.91GB
+[memoria 01:52:04] sistema usada=10.24GB disponivel=5.56GB / total=15.80GB (64.8%) | uso da app =1.91GB
+reconstrucao 30x30 completa: iters=10, erro final=13.411312
+reconstrucao 30x30 completa: iters=10, erro final=35058853347328.000000
+reconstrucao 30x30 completa: iters=2, erro final=0.000084
+reconstrucao 30x30 completa: iters=10, erro final=716460654592.000000
+reconstrucao 30x30 completa: iters=10, erro final=14.103708
+reconstrucao 30x30 completa: iters=10, erro final=155.210480
+[memoria 01:52:05] sistema usada=10.01GB disponivel=5.79GB / total=15.80GB (63.4%) | uso da app =1.64GB
+reconstrucao 30x30 completa: iters=2, erro final=0.000084
+reconstrucao 30x30 completa: iters=10, erro final=13.411312
+reconstrucao 30x30 completa: iters=2, erro final=0.000071
+reconstrucao 30x30 completa: iters=10, erro final=13.411312
+reconstrucao 30x30 completa: iters=2, erro final=0.000090
+reconstrucao 30x30 completa: iters=10, erro final=716460654592.000000
+reconstrucao 30x30 completa: iters=2, erro final=0.000084
+[memoria 01:52:06] sistema usada=10.04GB disponivel=5.75GB / total=15.80GB (63.6%) | uso da app =1.65GB
+reconstrucao 30x30 completa: iters=10, erro final=14.103708
+reconstrucao 30x30 completa: iters=10, erro final=6322532.000000
+reconstrucao 60x60 completa: iters=10, erro final=0.000090
+reconstrucao 30x30 completa: iters=10, erro final=13.411312
+reconstrucao 30x30 completa: iters=10, erro final=35058853347328.000000
+[memoria 01:52:07] sistema usada=10.06GB disponivel=5.74GB / total=15.80GB (63.7%) | uso da app =1.65GB
+reconstrucao 60x60 completa: iters=4, erro final=0.000081
+reconstrucao 60x60 completa: iters=4, erro final=0.000081
+reconstrucao 60x60 completa: iters=6, erro final=0.000093
+reconstrucao 60x60 completa: iters=4, erro final=0.000081
+reconstrucao 60x60 completa: iters=6, erro final=0.000093
+reconstrucao 60x60 completa: iters=5, erro final=0.000095
+[memoria 01:52:08] sistema usada=10.07GB disponivel=5.73GB / total=15.80GB (63.7%) | uso da app =1.65GB
+reconstrucao 60x60 completa: iters=10, erro final=25355.460938
+reconstrucao 60x60 completa: iters=10, erro final=0.000090
+reconstrucao 60x60 completa: iters=10, erro final=7160088576.000000
+reconstrucao 60x60 completa: iters=10, erro final=256914702336.000000
+reconstrucao 60x60 completa: iters=10, erro final=7160088576.000000
+reconstrucao 60x60 completa: iters=10, erro final=936.999451
+[memoria 01:52:09] sistema usada=10.05GB disponivel=5.75GB / total=15.80GB (63.6%) | uso da app =1.66GB
+[memoria 01:52:10] sistema usada=9.69GB disponivel=6.11GB / total=15.80GB (61.3%) | uso da app =1.66GB
+[memoria 01:52:11] sistema usada=9.68GB disponivel=6.12GB / total=15.80GB (61.3%) | uso da app =1.66GB
+[memoria 01:52:12] sistema usada=9.68GB disponivel=6.12GB / total=15.80GB (61.3%) | uso da app =1.66GB
+[memoria 01:52:13] sistema usada=9.68GB disponivel=6.12GB / total=15.80GB (61.3%) | uso da app =1.66GB
+[memoria 01:52:14] sistema usada=9.68GB disponivel=6.12GB / total=15.80GB (61.3%) | uso da app =1.66GB
+[memoria 01:52:15] sistema usada=9.68GB disponivel=6.12GB / total=15.80GB (61.3%) | uso da app =1.66GB
+[memoria 01:52:16] sistema usada=9.68GB disponivel=6.12GB / total=15.80GB (61.2%) | uso da app =1.66GB
+[memoria 01:52:17] sistema usada=9.67GB disponivel=6.12GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:18] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:19] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:20] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:21] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:22] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:23] sistema usada=9.68GB disponivel=6.12GB / total=15.80GB (61.3%) | uso da app =1.65GB
+[memoria 01:52:24] sistema usada=9.68GB disponivel=6.12GB / total=15.80GB (61.3%) | uso da app =1.65GB
+[memoria 01:52:25] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:26] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:27] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:28] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:29] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:30] sistema usada=9.66GB disponivel=6.14GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:31] sistema usada=9.67GB disponivel=6.13GB / total=15.80GB (61.2%) | uso da app =1.65GB
+[memoria 01:52:32] sistema usada=9.64GB disponivel=6.16GB / total=15.80GB (61.0%) | uso da app =1.65GB
+[memoria 01:52:33] sistema usada=9.63GB disponivel=6.17GB / total=15.80GB (60.9%) | uso da app =1.65GB
+[memoria 01:52:34] sistema usada=9.63GB disponivel=6.16GB / total=15.80GB (61.0%) | uso da app =1.65GB
+[memoria 01:52:35] sistema usada=9.64GB disponivel=6.16GB / total=15.80GB (61.0%) | uso da app =1.65GB
+[memoria 01:52:36] sistema usada=9.64GB disponivel=6.16GB / total=15.80GB (61.0%) | uso da app =1.65GB
+[memoria 01:52:37] sistema usada=9.64GB disponivel=6.16GB / total=15.80GB (61.0%) | uso da app =1.65GB
+[memoria 01:52:38] sistema usada=9.63GB disponivel=6.16GB / total=15.80GB (61.0%) | uso da app =1.65GB
+[memoria 01:52:39] sistema usada=9.63GB disponivel=6.16GB / total=15.80GB (61.0%) | uso da app =1.65GB
+[memoria 01:52:40] sistema usada=9.64GB disponivel=6.16GB / total=15.80GB (61.0%) | uso da app =1.65GB
+[memoria 01:52:41] sistema usada=9.63GB disponivel=6.16GB / total=15.80GB (61.0%) | uso da app =1.65GB
+[memoria 01:52:42] sistema usada=9.64GB disponivel=6.16GB / total=15.80GB (61.0%) | uso da app =1.65GB
+[memoria 01:52:43] sistema usada=9.93GB disponivel=5.86GB / total=15.80GB (62.9%) | uso da app =1.65GB
+[memoria 01:52:45] sistema usada=10.24GB disponivel=5.55GB / total=15.80GB (64.8%) | uso da app =1.65GB
+[memoria 01:52:46] sistema usada=10.34GB disponivel=5.46GB / total=15.80GB (65.4%) | uso da app =1.65GB
+[memoria 01:52:47] sistema usada=10.43GB disponivel=5.37GB / total=15.80GB (66.0%) | uso da app =1.65GB
+[memoria 01:52:48] sistema usada=10.47GB disponivel=5.33GB / total=15.80GB (66.3%) | uso da app =1.65GB
+[memoria 01:52:49] sistema usada=10.52GB disponivel=5.28GB / total=15.80GB (66.6%) | uso da app =1.65GB
+[memoria 01:52:50] sistema usada=10.52GB disponivel=5.28GB / total=15.80GB (66.6%) | uso da app =1.65GB
+[memoria 01:52:51] sistema usada=10.53GB disponivel=5.26GB / total=15.80GB (66.7%) | uso da app =1.65GB
+[memoria 01:52:52] sistema usada=10.53GB disponivel=5.27GB / total=15.80GB (66.7%) | uso da app =1.65GB
+[memoria 01:52:53] sistema usada=10.53GB disponivel=5.26GB / total=15.80GB (66.7%) | uso da app =1.65GB
+[memoria 01:52:54] sistema usada=10.53GB disponivel=5.27GB / total=15.80GB (66.7%) | uso da app =1.65GB
+[memoria 01:52:55] sistema usada=10.54GB disponivel=5.26GB / total=15.80GB (66.7%) | uso da app =1.65GB
+[memoria 01:52:56] sistema usada=10.56GB disponivel=5.24GB / total=15.80GB (66.8%) | uso da app =1.65GB
+[memoria 01:52:57] sistema usada=10.55GB disponivel=5.25GB / total=15.80GB (66.8%) | uso da app =1.65GB
+[memoria 01:52:58] sistema usada=10.63GB disponivel=5.17GB / total=15.80GB (67.3%) | uso da app =1.65GB

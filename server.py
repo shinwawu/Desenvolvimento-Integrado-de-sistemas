@@ -41,8 +41,9 @@ TEMPO_DE_ESPERA = 300  # so rejeita em ultimo caso, depois de 5 min esperando
 # frequencia de re-checagem da memoria durante a espera (evita busy-loop)
 TEMPO_VERIFICACAO = 0.5
 
-# tempo maximo p reconstrucao d img
-TEMPO_CONSTRUCAO = 30.0
+# tempo maximo p reconstrucao d img — alinhado com POLL_TIMEOUT do client.py (120s)
+# para o cliente ser o arbitro do prazo, sem teto interno mais agressivo aqui.
+TEMPO_CONSTRUCAO = 120.0
 
 request_max = asyncio.Semaphore(MAX_REQUEST)
 
@@ -125,7 +126,14 @@ async def lifespan(app: FastAPI):
     monitor_task = None
     if not os.environ.get("DISABLE_MONITOR"):
         monitor_task = asyncio.create_task(memoria_monitor())
+    # background GC: limpa jobs terminais lidos ha mais de GRACA_RESULT_S
+    gc_task = asyncio.create_task(_gc_jobs())
     yield
+    gc_task.cancel()
+    try:
+        await gc_task
+    except asyncio.CancelledError:
+        pass
     if monitor_task is not None:
         monitor_task.cancel()
         try:
@@ -385,8 +393,13 @@ async def processar_reconstrucao(
 
 
 # GET /result/{job_id}: devolve o estado do job. pending => {"status":"pending"};
-# pronto => o corpo final (com a imagem ou o erro) e o job e removido do store;
-# inexistente => 404. So um fetch terminal consome o job.
+# pronto => o corpo final (com a imagem ou o erro). IDEMPOTENTE: a entrada
+# terminal nao e removida imediatamente, fica disponivel para retries da camada
+# de transporte (urllib3.Retry no proxy) por GRACA_RESULT_S segundos antes da
+# limpeza pelo background _gc_jobs(). Inexistente => 404.
+GRACA_RESULT_S = 60.0
+
+
 @app.get("/result/{job_id}")
 async def result(job_id: str):
     job = jobs.get(job_id)
@@ -397,11 +410,30 @@ async def result(job_id: str):
         )
     if job["status"] == "pending":
         return {"status": "pending"}
-    # terminal: remove e devolve o corpo com o status HTTP apropriado.
-    jobs.pop(job_id, None)
-    body = dict(job)
-    http = body.pop("_http", 200)
+    # terminal: marca o tempo da primeira leitura terminal para o GC e responde.
+    # Em retries subsequentes, retorna o MESMO corpo (idempotente).
+    job.setdefault("_done_at", time.monotonic())
+    body = {k: v for k, v in job.items() if not k.startswith("_")}
+    http = job.get("_http", 200)
     return JSONResponse(status_code=http, content=body)
+
+
+async def _gc_jobs():
+    """Remove jobs terminais lidos ha mais de GRACA_RESULT_S segundos. Roda em
+    background; granularidade de 1s e suficiente — o objetivo e nao acumular
+    indefinidamente, nao reciclar memoria rapido."""
+    while True:
+        try:
+            agora = time.monotonic()
+            expirados = [
+                jid for jid, j in jobs.items()
+                if "_done_at" in j and agora - j["_done_at"] > GRACA_RESULT_S
+            ]
+            for jid in expirados:
+                jobs.pop(jid, None)
+        except Exception as e:
+            print(f"[_gc_jobs] erro: {e}")
+        await asyncio.sleep(1.0)
 
 
 # funcao que calcula o percentil p de uma lista de valores ordenados, retornando None se a lista estiver vazia
@@ -470,17 +502,28 @@ def metrics():
 #   equivalente do sticky routing, agora por job em vez de por cliente_id.
 # - Cada worker tem seu proprio store de jobs em memoria; nao precisa replicar.
 
-# portas dos workers, preenchidas no __main__ do proxy.
-WORKER_PORTS: list[int] = []
-_rr = itertools.count()  # contador round-robin do proxy
+# portas dos workers backend. Cada processo de proxy (uvicorn multi-worker) herda
+# a lista via env var WORKER_PORTS_ENV, setada pelo supervisor antes de subir os
+# proxies. No supervisor fica vazia (ele nao serve requests).
+WORKER_PORTS: list[int] = [
+    int(p) for p in os.environ.get("WORKER_PORTS_ENV", "").split(",") if p
+]
+_rr = itertools.count()  # contador round-robin (por processo de proxy)
+
+# Session compartilhada do proxy para o hop proxy->worker (keep-alive + pool).
+# Inicializada no startup de cada processo de proxy (proxy_lifespan).
+_proxy_session: "requests.Session | None" = None
+
+# pool de threads de forward POR PROCESSO de proxy. Como agora ha varios processos
+# de proxy dividindo a carga, cada um precisa de um pool menor.
+PROXY_POOL = int(os.environ.get("PROXY_POOL", "128"))
 
 
-# monitor de memoria do proxy: 1 linha agregada/s somando o RSS do proxy + toda a
-# sua arvore de processos (workers e os launchers do venv) — equivalente ao
-# spawn_memory_monitor do Rust. Somamos a arvore (children recursive) porque o
-# python.exe do venv no Windows e um launcher: o worker real e um neto do proxy,
-# nao o pid direto devolvido pelo subprocess.Popen.
-async def proxy_memoria_monitor(root_pid: int, intervalo_s: float = 1.0):
+# monitor de memoria (sincrono, roda numa thread do supervisor): 1 linha agregada/s
+# somando o RSS do supervisor + toda a sua arvore (proxies, workers e os launchers
+# do venv). Somamos a arvore (children recursive) porque o python.exe do venv no
+# Windows e um launcher: o processo real e um neto, nao o pid direto.
+def proxy_memoria_monitor(root_pid: int, intervalo_s: float = 1.0):
     GB = 1024**3
     while True:
         try:
@@ -504,18 +547,45 @@ async def proxy_memoria_monitor(root_pid: int, intervalo_s: float = 1.0):
             )
         except Exception as e:
             print(f"[memoria] erro: {e}", flush=True)
-        await asyncio.sleep(intervalo_s)
+        time.sleep(intervalo_s)
 
 
 @asynccontextmanager
 async def proxy_lifespan(app: FastAPI):
-    monitor_task = asyncio.create_task(proxy_memoria_monitor(os.getpid()))
+    # cada processo de proxy: amplia o executor do loop (forwards via requests em
+    # to_thread) e abre uma Session com keep-alive + pool para o hop proxy->worker.
+    # Offloadar o I/O para threads deixa o event loop livre para fazer accept() —
+    # com varios processos de proxy dividindo a carga, isso escala.
+    import concurrent.futures
+
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=PROXY_POOL, thread_name_prefix="proxy-fwd"
+    )
+    asyncio.get_running_loop().set_default_executor(executor)
+
+    from urllib3.util.retry import Retry
+
+    global _proxy_session
+    _proxy_session = requests.Session()
+    # retry leve no proxy->worker: cobre o caso em que o worker fecha a conexao
+    # (TIME_WAIT no Windows reciclando porta efemera) antes do proxy enviar o
+    # request — RemoteDisconnected vira 502 sem retry. Com backoff de 0.1s
+    # o cliente nao percebe a diferenca.
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=max(4, len(WORKER_PORTS)),
+        pool_maxsize=PROXY_POOL,
+        max_retries=Retry(
+            total=3,
+            backoff_factor=0.1,
+            status_forcelist=[502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        ),
+    )
+    _proxy_session.mount("http://", adapter)
+
     yield
-    monitor_task.cancel()
-    try:
-        await monitor_task
-    except asyncio.CancelledError:
-        pass
+    executor.shutdown(wait=False, cancel_futures=True)
+    _proxy_session.close()
 
 
 proxy_app = FastAPI(lifespan=proxy_lifespan)
@@ -530,7 +600,7 @@ async def proxy_reconstruct(model_id: str, request: Request):
     url = f"http://127.0.0.1:{port}/reconstruct/{model_id}"
 
     def _forward():
-        return requests.post(
+        return _proxy_session.post(
             url, params=params, data=body,
             headers={"content-type": "application/json"}, timeout=300,
         )
@@ -561,7 +631,7 @@ async def proxy_result(job_id: str):
         )
     url = f"http://127.0.0.1:{port}/result/{job_id}"
     try:
-        r = await asyncio.to_thread(requests.get, url, timeout=30)
+        r = await asyncio.to_thread(_proxy_session.get, url, timeout=30)
     except requests.RequestException as e:
         return JSONResponse(
             status_code=502,
@@ -596,6 +666,41 @@ def _parse_arg(args: list[str], flag: str, default: str) -> str:
     return default
 
 
+def _porta_livre(port: int) -> bool:
+    """True se nada esta escutando em 127.0.0.1:port."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(("127.0.0.1", port)) != 0
+
+
+def _matar_arvore(proc) -> None:
+    """Encerra um worker filho e toda a sua arvore de processos.
+
+    Necessario porque o python.exe do venv no Windows e um launcher: o worker
+    real do uvicorn (que faz o bind da porta) e um neto do proxy. Matar so
+    proc.pid deixaria o neto vivo, segurando a porta — e foi por isso que os
+    workers vazaram entre runs e acumularam WinError 10048.
+    """
+    try:
+        parent = psutil.Process(proc.pid)
+    except psutil.NoSuchProcess:
+        return
+    alvos = parent.children(recursive=True)
+    alvos.append(parent)
+    for p in alvos:
+        try:
+            p.terminate()
+        except psutil.Error:
+            pass
+    _, vivos = psutil.wait_procs(alvos, timeout=5)
+    for p in vivos:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "models": list(MODELS.keys())}
@@ -604,6 +709,7 @@ async def health():
 if __name__ == "__main__":
     import sys
     import subprocess
+    import threading
     import uvicorn
 
     args = sys.argv[1:]
@@ -618,17 +724,32 @@ if __name__ == "__main__":
             backlog=8192, limit_concurrency=2000,
         )
     else:
-        # modo proxy: spawna N workers como processos filhos e roteia para eles.
-        n_workers = int(os.environ.get("WORKERS", str(max(2, (os.cpu_count() or 4) // 2))))
+        # modo supervisor: spawna N backend workers (1x) e sobe P processos de proxy
+        # via uvicorn multi-worker (todos compartilham o socket da porta `port`, o
+        # kernel distribui o accept entre eles). Varios proxies removem o gargalo do
+        # proxy single-process.
+        # default 4 workers backend: mais capacidade de accept no hop proxy->worker
+        # (com 2 workers, parte dos forwards eram recusados -> 502 sob carga alta).
+        n_workers = int(os.environ.get("WORKERS", "4"))
+        n_proxies = int(os.environ.get("PROXIES", "4"))
         worker_ports = [port + 1 + i for i in range(n_workers)]
-        WORKER_PORTS[:] = worker_ports
+
+        # pre-flight: aborta se alguma porta ja estiver ocupada (ex: orfao de um run
+        # anterior). Sem isso, o worker carrega ~600MB de modelos so para falhar no bind.
+        ocupadas = [p for p in (port, *worker_ports) if not _porta_livre(p)]
+        if ocupadas:
+            print(
+                f"[supervisor] portas ja em uso: {ocupadas}. Encerre processos antigos "
+                f"(ex: taskkill /F /IM python.exe) antes de subir o servidor."
+            )
+            sys.exit(1)
 
         children: list[subprocess.Popen] = []
-        print(f"[proxy] iniciando {n_workers} workers nas portas {worker_ports}")
+        print(f"[supervisor] iniciando {n_workers} workers nas portas {worker_ports}")
         for p in worker_ports:
             env = os.environ.copy()
             env["WORKER_PORT"] = str(p)      # prefixo do job_id
-            env["DISABLE_MONITOR"] = "1"     # so o proxy monitora memoria
+            env["DISABLE_MONITOR"] = "1"     # so o supervisor monitora memoria
             child = subprocess.Popen(
                 [sys.executable, "server.py", "--worker", "--port", str(p)], env=env
             )
@@ -637,21 +758,30 @@ if __name__ == "__main__":
         # espera todos os workers responderem /health (carregam modelos antes)
         for p in worker_ports:
             if not _esperar_health(p, 60):
-                print(f"[proxy] worker {p} nao subiu em 60s")
-        print(f"[proxy] {n_workers} workers prontos em {worker_ports}")
+                print(f"[supervisor] worker {p} nao subiu em 60s")
+        print(f"[supervisor] {n_workers} workers prontos em {worker_ports}")
 
+        # passa as portas dos workers para os processos de proxy (eles herdam o env
+        # no spawn e populam WORKER_PORTS no import).
+        os.environ["WORKER_PORTS_ENV"] = ",".join(str(p) for p in worker_ports)
+
+        # monitor de memoria agregado roda no supervisor (1 linha/s sobre toda a
+        # arvore: proxies + workers). Daemon thread para nao travar a saida.
+        threading.Thread(
+            target=proxy_memoria_monitor, args=(os.getpid(),), daemon=True
+        ).start()
+
+        print(f"[supervisor] subindo {n_proxies} processos de proxy na porta {port}")
         try:
+            # uvicorn multi-worker: o parent (este processo) faz o bind e passa o
+            # socket para os P processos filhos de proxy, que servem proxy_app.
             uvicorn.run(
-                proxy_app, host="0.0.0.0", port=port,
+                "server:proxy_app", host="0.0.0.0", port=port, workers=n_proxies,
                 backlog=8192, limit_concurrency=2000,
             )
         finally:
-            # cleanup: encerra os workers ao sair (normal ou Ctrl-C)
-            print("\n[proxy] encerrando workers...")
+            # cleanup: encerra os backend workers (e suas arvores). Os processos de
+            # proxy sao encerrados pelo proprio uvicorn ao sair.
+            print("\n[supervisor] encerrando workers...")
             for c in children:
-                c.terminate()
-            for c in children:
-                try:
-                    c.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    c.kill()
+                _matar_arvore(c)

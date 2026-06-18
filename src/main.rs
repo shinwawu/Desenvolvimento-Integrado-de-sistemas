@@ -70,8 +70,9 @@ type F = f32;
 
 const MAX_ITER: usize = 10;
 const TOL: F = 1e-4;
-// tempo maximo p reconstrucao d img
-const TEMPO_CONSTRUCAO: u64 = 30;
+// tempo maximo p reconstrucao d img — alinhado com POLL_TIMEOUT do client.py (120s)
+// para o cliente ser o arbitro do prazo, sem teto interno mais agressivo aqui.
+const TEMPO_CONSTRUCAO: u64 = 120;
 // piso de memoria abaixo do qual o request espera (nao rejeita). matching server.py
 const MEMO_MINIMA: f64 = 0.5;
 // so rejeita em ultimo caso, depois de 5 min esperando (evita deadlock em OOM real)

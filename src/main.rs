@@ -34,8 +34,14 @@ const TOL: F = 1e-4;
 // tempo maximo p reconstrucao d img — alinhado com POLL_TIMEOUT do client.py (120s)
 // para o cliente ser o arbitro do prazo, sem teto interno mais agressivo aqui.
 const TEMPO_CONSTRUCAO: u64 = 120;
-// piso de memoria abaixo do qual o request espera (nao rejeita). matching server.py
-const MEMO_MINIMA: f64 = 0.5;
+// piso de memoria abaixo do qual o request espera (nao rejeita).
+// 0.05GB: os modelos H/Ht sao carregados UMA vez no startup e compartilhados via
+// Arc; cada reconstrucao usa so alguns KB de vetores de trabalho. Um piso alto
+// (0.5GB) era contraproducente aqui — o proprio footprint estatico dos modelos
+// (~2.3GB nos 2 workers) ja derruba o available do sistema abaixo de 0.5GB, e no
+// macOS o sysinfo ainda sub-reporta available (conta cache reclamavel como usado),
+// fazendo TODO request travar no wait-loop e estourar timeout (0 reconstrucoes).
+const MEMO_MINIMA: f64 = 0.05;
 // so rejeita em ultimo caso, depois de 5 min esperando (evita deadlock em OOM real)
 const TEMPO_DE_ESPERA: u64 = 300;
 // frequencia de re-checagem da memoria durante a espera (em ms)
@@ -45,8 +51,12 @@ struct Model {
     // faer SparseColMat (CSC): kernel SIMD do sparse_dense_matmul opera direto
     // sobre CSC. Cada coluna pode ser vetorizada com AVX2/AVX-512 (target-native).
     // sprs era so para parsing do npz; aqui armazenamos no formato que faer roda.
+    //
+    // So armazenamos H. O produto transposto Hᵀ·r e computado direto sobre os
+    // arrays CSC de H (ver csc_transpose_matvec), sem materializar Hᵀ — corta o
+    // footprint de memoria pela metade (~330MB por modelo 60x60 nesta maquina),
+    // o que importa porque o gargalo aqui e memoria, nao CPU.
     h: SparseColMat<usize, F>,
-    ht: SparseColMat<usize, F>,
     s: usize,
     n: usize,
     shape: (usize, usize),
@@ -191,12 +201,9 @@ fn load_model(name: &str, cfg: &ModelCfg) -> Result<Model, Box<dyn std::error::E
         );
     }
     let nnz = h_sprs.nnz();
-    let ht_sprs: CsMat<F> = h_sprs.transpose_view().to_other_storage();
-    let nnz_t = ht_sprs.nnz();
     let h = sprs_to_faer(h_sprs);
-    let ht = sprs_to_faer(ht_sprs);
-    println!("loaded {}: nnz={}, transpose nnz={} (faer SparseColMat)", name, nnz, nnz_t);
-    Ok(Model { h, ht, s: cfg.s, n: cfg.n, shape: cfg.shape })
+    println!("loaded {}: nnz={} (faer SparseColMat, sem Hᵀ materializado)", name, nnz);
+    Ok(Model { h, s: cfg.s, n: cfg.n, shape: cfg.shape })
 }
 
 // =============================================================================
@@ -233,13 +240,37 @@ fn par_csr_matvec(h: &SparseColMat<usize, F>, x: &ArrayView1<F>) -> Array1<F> {
     Array1::from(out_vec)
 }
 
+/// y = Hᵀ @ r, computado direto sobre os arrays CSC de H (sem Hᵀ materializado).
+///
+/// H e CSC (s×n): a coluna j guarda as entradas (row_idx[k], vals[k]). Logo
+/// (Hᵀ·r)[j] = Σ_k vals[k]·r[row_idx[k]] — um produto interno por coluna (gather).
+/// O acesso varre col_ptr/row_idx/vals sequencialmente (mesmos arrays que o faer
+/// usa no forward); r tem comprimento s (~200KB em f32, cabe em cache), entao o
+/// gather r[row_idx[k]] e barato. Mesmo custo O(nnz) do antigo ht@r, metade da RAM.
+fn ht_matvec(h: &SparseColMat<usize, F>, r: &ArrayView1<F>) -> Array1<F> {
+    let (sym, vals) = h.as_ref().parts();
+    let col_ptr = sym.col_ptr();
+    let row_idx = sym.row_idx();
+    let ncols = h.ncols();
+    let r_slice = r.as_slice().expect("r must be contiguous");
+    let mut out = vec![0.0_f32; ncols];
+    for j in 0..ncols {
+        let mut acc = 0.0_f32;
+        for k in col_ptr[j]..col_ptr[j + 1] {
+            acc += vals[k] * r_slice[row_idx[k]];
+        }
+        out[j] = acc;
+    }
+    Array1::from(out)
+}
+
 /// CGNR: same algorithm as the Python server.
 fn cgnr(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>, usize, F) {
     let n = model.n;
     let tol_sq = tol * tol;
     let mut f = Array1::<F>::zeros(n);
     let mut r = g.to_owned();
-    let mut z: Array1<F> = par_csr_matvec(&model.ht, &r.view());
+    let mut z: Array1<F> = ht_matvec(&model.h, &r.view());
     let mut p = z.clone();
     let mut norm_z_sq = z.dot(&z);
 
@@ -257,7 +288,7 @@ fn cgnr(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>,
         if norm_r_sq < tol_sq {
             return (f, k + 1, norm_r_sq.sqrt());
         }
-        z = par_csr_matvec(&model.ht, &r.view());
+        z = ht_matvec(&model.h, &r.view());
         let norm_z_new_sq = z.dot(&z);
         if norm_z_sq == 0.0 {
             return (f, k + 1, norm_r_sq.sqrt());
@@ -276,7 +307,7 @@ fn cgne(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>,
     let tol_sq = tol * tol;
     let mut f = Array1::<F>::zeros(n);
     let mut r = g.to_owned();              // r = g - H*0 = g
-    let mut p: Array1<F> = par_csr_matvec(&model.ht, &r.view());
+    let mut p: Array1<F> = ht_matvec(&model.h, &r.view());
     let mut rtr = r.dot(&r);
 
     for k in 0..max_iter {
@@ -293,7 +324,7 @@ fn cgne(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>,
             return (f, k + 1, new_rtr.sqrt());
         }
         let beta = new_rtr / rtr;
-        let htr: Array1<F> = par_csr_matvec(&model.ht, &r.view());
+        let htr: Array1<F> = ht_matvec(&model.h, &r.view());
         p *= beta;
         p += &htr;
         rtr = new_rtr;

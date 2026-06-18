@@ -19,14 +19,19 @@ import urllib.request
 from pathlib import Path
 
 import pandas as pd
+import psutil
+
+IS_WINDOWS = os.name == "nt"
+# nome do binario Rust: com .exe no Windows, sem extensao no macOS/Linux
+RUST_BIN_NAME = "Desenvolvimento-Integrado-de-sistemas" + (".exe" if IS_WINDOWS else "")
+RUST_BIN_DEFAULT = str(Path("target/release") / RUST_BIN_NAME)
 
 HOST = "127.0.0.1"
 PORT = 8000
 N_INSTANCIAS = 3
 N_TASKS_POR_INSTANCIA = 300
-# numero de workers backend por servidor (assimetrico, a pedido): Python com mais
-# workers para absorver o hop proxy->worker sob a carga 3x300; Rust com 2.
-N_WORKERS_PYTHON = 4
+# numero de workers backend por servidor: 2 para ambos (comparacao simetrica).
+N_WORKERS_PYTHON = 2
 N_WORKERS_RUST = 2
 
 
@@ -153,28 +158,44 @@ def rodar_clientes_paralelos(
     }
 
 
+def _relatorio_vazio(esperado: int) -> dict:
+    return {
+        "csvs": 0,
+        "rows": 0,
+        "esperado": esperado,
+        "convergidos": 0,
+        "cgnr": 0,
+        "cgne": 0,
+        "com_ganho": 0,
+        "sem_ganho": 0,
+        "m_30x30": 0,
+        "m_60x60": 0,
+        "p50_recon_s": 0.0,
+        "p99_recon_s": 0.0,
+        "media_recon_s": 0.0,
+        "max_recon_s": 0.0,
+    }
+
+
 def analisar_csvs(esperado: int) -> dict:
     csvs = sorted(Path(".").glob("relatorio_i*.csv"))
     if not csvs:
-        return {
-            "csvs": 0,
-            "rows": 0,
-            "esperado": esperado,
-            "convergidos": 0,
-            "cgnr": 0,
-            "cgne": 0,
-            "com_ganho": 0,
-            "sem_ganho": 0,
-            "m_30x30": 0,
-            "m_60x60": 0,
-            "p50_recon_s": 0.0,
-            "p99_recon_s": 0.0,
-            "media_recon_s": 0.0,
-            "max_recon_s": 0.0,
-        }
-    df = pd.concat([pd.read_csv(c) for c in csvs], ignore_index=True)
+        return _relatorio_vazio(esperado)
+    # um client que ficou sem servico (todas as reqs deram timeout, ex: servidor
+    # saturado/sem memoria) grava um CSV vazio (so o newline, sem header). Pular
+    # esses para nao abortar a comparacao inteira com EmptyDataError — o relatorio
+    # ainda reflete as reconstrucoes que os outros clients conseguiram.
+    frames = []
+    for c in csvs:
+        try:
+            frames.append(pd.read_csv(c))
+        except pd.errors.EmptyDataError:
+            print(f"  [aviso] {c.name} vazio (client sem reconstrucoes) — ignorado")
+    if not frames:
+        return _relatorio_vazio(esperado)
+    df = pd.concat(frames, ignore_index=True)
     return {
-        "csvs": len(csvs),
+        "csvs": len(frames),
         "rows": len(df),
         "esperado": esperado,
         "convergidos": int(df["converg"].sum()),
@@ -196,19 +217,72 @@ def matar_workers_fantasma(nome: str) -> None:
     herdam o socket; Rust multi-process spawna children do mesmo binario. Ambos
     podem ficar segurando a porta 8000 mesmo depois do parent morrer."""
     if nome == "Rust":
-        subprocess.run(
-            ["taskkill", "/F", "/IM", "Desenvolvimento-Integrado-de-sistemas.exe"],
-            capture_output=True,
-            check=False,
-        )
-    elif nome == "Python":
-        for pat in ("%server.py%", "%multiprocessing-fork%"):
+        if IS_WINDOWS:
             subprocess.run(
-                f"wmic process where \"commandline like '{pat}' and not commandline like '%wmic%'\" delete",
-                shell=True,
+                ["taskkill", "/F", "/IM", RUST_BIN_NAME],
                 capture_output=True,
                 check=False,
             )
+        else:
+            # pkill -f casa pelo command line (path do binario + children spawnados),
+            # cobrindo o parent e os processos filhos que herdam a porta 8000.
+            subprocess.run(
+                ["pkill", "-f", "Desenvolvimento-Integrado-de-sistemas"],
+                capture_output=True,
+                check=False,
+            )
+    elif nome == "Python":
+        if IS_WINDOWS:
+            for pat in ("%server.py%", "%multiprocessing-fork%"):
+                subprocess.run(
+                    f"wmic process where \"commandline like '{pat}' and not commandline like '%wmic%'\" delete",
+                    shell=True,
+                    capture_output=True,
+                    check=False,
+                )
+        else:
+            # parent (server.py) + workers uvicorn (multiprocessing spawn/fork)
+            for pat in ("server.py", "multiprocessing"):
+                subprocess.run(
+                    ["pkill", "-f", pat],
+                    capture_output=True,
+                    check=False,
+                )
+
+
+def aguardar_memoria_liberada(alvo_gb: float = 1.5, timeout_s: int = 30) -> None:
+    """Depois de matar um server, os workers (cada um segura ~600MB de modelos)
+    morrem mas o SO leva um instante para reclamar as paginas. Sem esperar isso, o
+    proximo server sobe com a memoria ainda ocupada e cai no wait-loop de admission
+    control (MEMO_MINIMA=0.5GB nos dois servers), throttlando o throughput a ~zero —
+    foi o que afundou o Rust quando rodou logo depois do Python.
+
+    Faz poll de available ate (a) passar de `alvo_gb`, ou (b) estabilizar (parar de
+    subir — sinal de que o SO ja reclamou o que ia reclamar). Segue mesmo assim no
+    timeout: o macOS contabiliza cache como usado e pode reportar available baixo de
+    forma persistente, entao nunca bloqueamos indefinidamente."""
+    GB = 1024 ** 3
+    inicio = time.time()
+    anterior = -1.0
+    estaveis = 0
+    print("  aguardando SO reclamar memoria do server anterior...")
+    while time.time() - inicio < timeout_s:
+        avail = psutil.virtual_memory().available / GB
+        if avail >= alvo_gb:
+            print(f"  memoria liberada: {avail:.2f}GB disponivel")
+            return
+        # available parou de subir por algumas amostras -> reclamacao terminou
+        if anterior >= 0 and avail - anterior < 0.02:
+            estaveis += 1
+            if estaveis >= 3:
+                print(f"  memoria estabilizou em {avail:.2f}GB (alvo {alvo_gb}GB nao atingido)")
+                return
+        else:
+            estaveis = 0
+        anterior = avail
+        time.sleep(0.5)
+    avail = psutil.virtual_memory().available / GB
+    print(f"  timeout ({timeout_s}s) esperando memoria — seguindo com {avail:.2f}GB disponivel")
 
 
 def rodar_contra_server(
@@ -325,9 +399,7 @@ def gerar_relatorios(resultados: list[dict], seed: int) -> None:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--rust-bin", default="target/release/Desenvolvimento-Integrado-de-sistemas.exe"
-    )
+    ap.add_argument("--rust-bin", default=RUST_BIN_DEFAULT)
     ap.add_argument("--only", choices=["python", "rust", "ambos"], default="ambos")
     args = ap.parse_args()
 
@@ -356,6 +428,11 @@ def main():
             )
         )
     if args.only in ("rust", "ambos"):
+        # se o Python acabou de rodar, espera a memoria dos workers ser reclamada
+        # antes de subir o Rust (senao o Rust inicia sob pressao de memoria e o
+        # admission control o throttla — comparacao injusta por ordem de execucao).
+        if args.only == "ambos":
+            aguardar_memoria_liberada()
         if not rust_path.exists():
             print(f"[Rust] binario nao encontrado: {rust_path} — pulando")
         else:

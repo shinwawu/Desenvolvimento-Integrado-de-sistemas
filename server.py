@@ -14,11 +14,6 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, ORJSONResponse
 from pydantic import BaseModel
 
-# TODO:
-# task 1: arrumar o ganho de sinal que tem o significado errado, ela tem a ver com o brilho do sinal
-# task 2: normalizar para o absoluto antes de converter para escala de cinza, para evitar que o brilho do sinal afete a escala de cinza da imagem reconstruida
-
-
 # Configurações dos modelos disponíveis
 MODELS_CONFIG = {
     "60x60": {"S": 50816, "N": 3600, "shape": (60, 60), "path": "data/H-1.npz"},

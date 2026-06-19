@@ -1,4 +1,6 @@
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -13,16 +15,13 @@ import random
 
 HOST = "127.0.0.1"
 PORT = 8000
+#numero de requisicoes concorrentes (threads) que o cliente.py vai disparar.
 NUM_CLIENTS = int(os.environ.get("NUM_CLIENTS", "300"))
 
-# Seed deterministica para pareamento de workload entre runs (Python vs Rust).
-# Quando setado, cada thread cliente usa seu proprio random.Random(seed * K + client_id)
-# em vez do modulo random global, eliminando race condition no consumo do PRNG.
-# Quando 0, comportamento original (random.module global, nao deterministico).
+#seed para que a execucao seja deterministica (mesmo img/algo/ganho por client_id em cada run)
 RUNNER_SEED = int(os.environ.get("RUNNER_SEED", "0"))
 
-# identificador unico desta instancia do client.py. permite rodar varias instancias
-# em paralelo sem colidir cliente_id no servidor nem sobrescrever os arquivos de saida.
+# identificador unico desta instancia do client.py
 INSTANCE_ID = f"i{os.getpid()}"
 
 # serve para proteger o acesso concorrente a relatorio_rows, onde cada thread de cliente registra seus resultados
@@ -76,14 +75,31 @@ def aplicar_ganho_sinal(g: np.ndarray) -> np.ndarray:
     return g * gamma
 
 
-# intervalo entre consultas de polling e tempo maximo de espera pelo resultado
+#polling é a consulta periodica do resultado da tarefa 
 POLL_INTERVAL = 0.5
 POLL_TIMEOUT = 120.0
+#retry de consulta
+MAX_POLL_ERROS = 5
 
 
-# modelo assincrono: o cliente dispara o request (apos um intervalo aleatorio),
+#funcao para criar uma session com retry
+def _criar_session() -> requests.Session:
+    session = requests.Session()
+    retries = Retry(
+        total=5,
+        connect=5,
+        read=0,
+        backoff_factor=0.3,   # espera 0.3, 0.6, 1.2, 2.4, 4.8s entre tentativas
+        allowed_methods=None,
+        raise_on_status=False,
+    )
+    session.mount("http://", HTTPAdapter(max_retries=retries))
+    return session
+
+
+# modelo assincrono: o cliente dispara o request,
 # recebe na hora um job_id e depois faz polling ate o resultado ficar pronto.
-# a conexao do POST nao fica presa durante a reconstrucao.
+# tirando a necessidade de manter a conexao do POST durante a reconstrucao.
 async def enviar_sinal(cliente_id: str, algorithm: str, model_id: str, g: np.ndarray, rng=random):
 
     url = f"http://{HOST}:{PORT}/reconstruct/{model_id}"
@@ -97,13 +113,11 @@ async def enviar_sinal(cliente_id: str, algorithm: str, model_id: str, g: np.nda
         "model_id": model_id,
         "complete": True,
     }
-    # uma Session por cliente: reusa a mesma conexao TCP (keep-alive) no POST e em
-    # todos os polls, em vez de abrir uma conexao nova a cada chamada. Sob centenas
-    # de clientes em polling, isso evita a torrente de conexoes que derruba o proxy.
-    session = requests.Session()
+    # cria uma session com retry para ser reutilizada
+    session = _criar_session()
     try:
         try:
-            # dispara o sinal; o servidor responde imediatamente com o job_id
+            # dispara o sinal
             response = await asyncio.to_thread(
                 session.post, url, params=params, json=payload
             )
@@ -113,7 +127,7 @@ async def enviar_sinal(cliente_id: str, algorithm: str, model_id: str, g: np.nda
             print(f"[{cliente_id}] request error: {e}")
             return {"error": str(e)}
 
-        # se o servidor recusou na validacao (modelo/tamanho), ja vem o erro aqui
+        
         job_id = data.get("job_id")
         if not job_id:
             return data
@@ -124,17 +138,24 @@ async def enviar_sinal(cliente_id: str, algorithm: str, model_id: str, g: np.nda
         session.close()
 
 
-# faz polling em GET /result/{job_id} ate o job sair de "pending"
+# faz polling em GET /result/{job_id} ate o job sair de pendente
 async def aguardar_resultado(cliente_id: str, job_id: str, session: requests.Session):
     url = f"http://{HOST}:{PORT}/result/{job_id}"
     deadline = time.time() + POLL_TIMEOUT
+    erros_consecutivos = 0
     while True:
         await asyncio.sleep(POLL_INTERVAL)
         try:
             response = await asyncio.to_thread(session.get, url)
         except requests.RequestException as e:
-            print(f"[{cliente_id}] poll error: {e}")
-            return {"error": str(e)}
+            erros_consecutivos += 1
+            # apos certo numero de erros consecutivos, ou se passar do deadline, desiste de esperar o resultado e retorna o erro para o chamador
+            # evita ficar preso em loop infinito de polling quando o servidor nao responde ou o job foi perdido.
+            if erros_consecutivos > MAX_POLL_ERROS or time.time() > deadline:
+                print(f"[{cliente_id}] poll error (desistindo apos {erros_consecutivos}): {e}")
+                return {"error": str(e)}
+            continue
+        erros_consecutivos = 0
 
         if response.status_code == 404:
             return {"error": f"job {job_id} nao encontrado"}

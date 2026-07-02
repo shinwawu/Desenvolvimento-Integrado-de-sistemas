@@ -33,7 +33,7 @@ const TOL: F = 1e-4;
 // tempo maximo p reconstrucao d img
 
 const TEMPO_CONSTRUCAO: u64 = 120;
-const MEMO_MINIMA: f64 = 0.05;
+const MEMO_MINIMA: f64 = 0.5;
 // so rejeita em ultimo caso, depois de 5 min esperando 
 const TEMPO_DE_ESPERA: u64 = 300;
 // frequencia de re-checagem da memoria durante a espera 
@@ -56,11 +56,7 @@ enum JobState {
 }
 
 /// Limite de reconstrucoes simultaneas que SOBE e DESCE em runtime conforme a
-/// carga (logica do SystemMonitor.swift, aplicada continuamente pelo
-/// spawn_monitor_concorrencia). Diferente do nº de workers — fixo apos o boot —
-/// este teto muda a cada 1s. `acquire().await` espera ate haver vaga; uma
-/// reconstrucao em andamento nunca e interrompida quando o teto baixa: apenas
-/// nao entram novas ate em_execucao cair abaixo do novo teto.
+/// carga 
 struct LimiteDinamico {
     estado: Mutex<(usize, usize)>, // (maximo, em_execucao)
     notify: Notify,
@@ -258,8 +254,7 @@ fn par_csr_matvec(h: &SparseColMat<usize, F>, x: &ArrayView1<F>) -> Array1<F> {
 
     let mut out_vec = vec![0.0_f32; nrows];
     let y_mat = faer::MatMut::from_column_major_slice_mut(&mut out_vec, nrows, 1);
-    // Par::Seq: paralelismo vem das MAX_REQUEST=16 requisicoes simultaneas;
-    // adicionar threads internas piora throughput (oversubscription dos cores).
+
     sparse_dense_matmul(
         y_mat,
         Accum::Replace,
@@ -420,9 +415,7 @@ fn iso_now() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
 }
 
-/// Memoria disponivel do sistema em GB. Usa `total - used` em vez de
-/// `available_memory()`: no macOS o sysinfo reporta available ~0 (nao conta
-/// cache reclamavel), enquanto total-used bate com o valor real (e com o psutil).
+// memoria disponivel do sistema 
 fn memoria_disponivel_gb() -> f64 {
     use sysinfo::System;
     let mut sys = System::new();
@@ -430,10 +423,18 @@ fn memoria_disponivel_gb() -> f64 {
     disponivel_gb(&sys)
 }
 
-/// Memoria disponivel (GB) a partir de um System ja com refresh_memory feito.
+/// memoria disponivel a partir de um system ja com refresh_memory feito.
+/// Usa available_memory() para casar com o server Python
+/// (psutil.virtual_memory().available): memoria alocavel sem swap, ja descontando
+/// cache reclamavel. Cai para total-used so se available vier 0 (sysinfo antigo
+/// reportava ~0 no macOS; em 0.32 ja retorna valor real nas 3 plataformas).
 fn disponivel_gb(sys: &sysinfo::System) -> f64 {
     const GB: f64 = 1024.0 * 1024.0 * 1024.0;
-    (sys.total_memory() as f64 - sys.used_memory() as f64).max(0.0) / GB
+    let bytes = match sys.available_memory() {
+        0 => sys.total_memory().saturating_sub(sys.used_memory()),
+        avail => avail,
+    };
+    bytes as f64 / GB
 }
 
 // funcaq assincrono: o POST valida o request, cria um job, dispara a reconstrucao
@@ -639,9 +640,7 @@ struct Amostra {
     mem_avail_gb: f64,
 }
 
-/// Monitor de recursos — roda so no proxy. A cada 1s amostra CPU% e RSS da arvore
-/// (proxy + workers), grava recursos_rust_server.csv e acumula as amostras em
-/// `samples` para o grafico ser gerado no shutdown.
+/// Monitor de recursos 
 fn spawn_resource_monitor(app_pids: Vec<u32>, samples: Arc<Mutex<Vec<Amostra>>>) {
     tokio::spawn(async move {
         use sysinfo::{System, Pid, ProcessesToUpdate};
@@ -675,7 +674,7 @@ fn spawn_resource_monitor(app_pids: Vec<u32>, samples: Arc<Mutex<Vec<Amostra>>>)
                 .sum();
             let cpu_sys = sys.global_cpu_usage();
             let used = sys.used_memory() as f64 / GB;
-            // total-used: available_memory() reporta ~0 no macOS (ver disponivel_gb)
+            // available_memory() (com fallback total-used); ver disponivel_gb
             let avail = disponivel_gb(&sys);
             let rss_app_gb = rss_total as f64 / GB;
             let t_s = t0.elapsed().as_secs_f64();
@@ -695,12 +694,7 @@ fn spawn_resource_monitor(app_pids: Vec<u32>, samples: Arc<Mutex<Vec<Amostra>>>)
     });
 }
 
-/// Ajusta o limite de reconstrucoes simultaneas (LimiteDinamico) em tempo real,
-/// a cada 1s, conforme a MEMORIA DISPONIVEL — nao a CPU%: a reconstrucao e
-/// CPU-bound (cada uma ~1 core, memoria desprezivel), entao CPU alta e DESEJAVEL.
-/// O que pode travar a maquina e swap, entao reagimos ao sinal honesto (RAM livre,
-/// via total-used). Normalmente fica no teto (cores ocupados); so reduz quando a
-/// RAM aperta. Roda em cada worker.
+/// ajusta o limite de reconstrucoes simultaneas (concurrency) dinamicamente de acordo com a memoria disponivel do sistema.
 fn spawn_monitor_concorrencia(limite: Arc<LimiteDinamico>, max_request: usize) {
     tokio::spawn(async move {
         use sysinfo::System;
@@ -733,7 +727,7 @@ fn spawn_monitor_concorrencia(limite: Arc<LimiteDinamico>, max_request: usize) {
     });
 }
 
-/// Aguarda SIGINT (Ctrl-C) ou SIGTERM (como o comparativo.py mata o server).
+/// aguarda SIGINT (Ctrl-C) ou SIGTERM (como o comparativo.py mata o server).
 async fn aguardar_sinal_termino() {
     #[cfg(unix)]
     {
@@ -791,9 +785,7 @@ fn desenhar_painel(
     }
 }
 
-/// Gera um grafico SVG (sem dependencias externas) com dois paineis — CPU% e
-/// memoria (GB) ao longo do tempo. SVG e arquivo de imagem que abre em qualquer
-/// navegador; escolhido para nao adicionar crate de plotagem (e download) ao build.
+/// Gera um grafico SVG para o uso de recursos (CPU, memoria) do server Rust. O grafico eh salvo em path.
 fn gerar_grafico_recursos(amostras: &[Amostra], path: &str) {
     use std::io::Write;
     if amostras.is_empty() {
@@ -1003,9 +995,7 @@ async fn run_proxy(proxy_port: u16, n_workers: usize) -> Result<(), std::io::Err
     let exe = std::env::current_exe()?;
     let mut children: Vec<std::process::Child> = Vec::with_capacity(n_workers);
 
-    // concorrencia TOTAL alvo = nucleos * 1.5 (folga p/ esconder latencia),
-    // DIVIDIDA entre os workers -> evita oversubscription. Ex: 8 nucleos, 2
-    // workers -> total 12, 6 por worker.
+
     let per_worker_max =
         (((num_cpus::get() as f32 * 1.5) / n_workers as f32).round() as usize).max(1);
     println!(
@@ -1104,14 +1094,10 @@ fn parse_arg<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
 }
 
 /// Calcula o numero de workers escalando com os DOIS recursos da maquina:
-/// workers = min(teto_cpu, teto_ram). Maquina mais forte (mais nucleos/RAM) sobe
-/// os dois tetos -> mais workers; mais fraca -> menos. O teto de RAM evita
-/// saturar/swappar (cada worker carrega ~0.9GB fixo de modelos). Usa RAM
-/// disponivel (total-used), entao tambem adapta ao que ja roda na maquina.
-/// O Rust tem 1 unico proxy (o processo principal), so workers e dinamico.
+/// workers = min(teto_cpu, teto_ram). 
 fn calcular_workers() -> usize {
     use sysinfo::System;
-    const RAM_POR_WORKER_GB: f64 = 0.9;
+    const RAM_POR_WORKER_GB: f64 = 0.8;
     const MARGEM_GB: f64 = 1.0;
     let mut sys = System::new();
     sys.refresh_memory();

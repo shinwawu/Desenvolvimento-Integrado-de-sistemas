@@ -54,6 +54,17 @@ imagem_modelo = {
 }
 algorithms = ["CGNR", "CGNE"]
 
+# filtro opcional de modelo (usado pelas versoes comparativo_30x30 / _60x60 do
+# benchmark): restringe quais imagens o cliente sorteia, gerando requests de um
+# unico modelo. Vazio = comportamento normal (sorteia entre todos).
+MODELO_ALVO = os.environ.get("MODELO_ALVO", "").strip()
+if MODELO_ALVO:
+    IMGS_PERMITIDAS = [k for k, v in imagem_modelo.items() if v["model_id"] == MODELO_ALVO]
+    if not IMGS_PERMITIDAS:
+        raise ValueError(f"MODELO_ALVO={MODELO_ALVO!r} invalido; use '30x30' ou '60x60'")
+else:
+    IMGS_PERMITIDAS = list(imagem_modelo.keys())
+
 
 sinais = {
     k: pd.read_csv(v["path"], header=None).to_numpy(dtype=np.float64).ravel()
@@ -75,14 +86,16 @@ def aplicar_ganho_sinal(g: np.ndarray) -> np.ndarray:
     return g * gamma
 
 
-#polling é a consulta periodica do resultado da tarefa 
+#polling é a consulta periodica do resultado da tarefa
 POLL_INTERVAL = 0.5
-POLL_TIMEOUT = 120.0
+# 300s: sob carga alta os jobs esperam na fila do servidor; 120s era curto demais
+# e o cliente abandonava jobs que ainda iam terminar ("timeout aguardando job").
+POLL_TIMEOUT = 300.0
 #retry de consulta
 MAX_POLL_ERROS = 5
 
 
-#funcao para criar uma session com retry
+#funcao para criar uma session com retry, a sessao vai ser reutilizada
 def _criar_session() -> requests.Session:
     session = requests.Session()
     retries = Retry(
@@ -117,11 +130,13 @@ async def enviar_sinal(cliente_id: str, algorithm: str, model_id: str, g: np.nda
     session = _criar_session()
     try:
         try:
-            # dispara o sinal
+            # dispara o sinal por meio de uma thread, que realiza uma requisicao post
             response = await asyncio.to_thread(
                 session.post, url, params=params, json=payload
             )
             response.raise_for_status()
+
+            # recebe o job_id na resposta, ou um erro se a requisicao falhar ou for rejeitada por memoria 
             data = response.json()
         except requests.RequestException as e:
             print(f"[{cliente_id}] request error: {e}")
@@ -139,6 +154,7 @@ async def enviar_sinal(cliente_id: str, algorithm: str, model_id: str, g: np.nda
 
 
 # faz polling em GET /result/{job_id} ate o job sair de pendente
+# polling é 
 async def aguardar_resultado(cliente_id: str, job_id: str, session: requests.Session):
     url = f"http://{HOST}:{PORT}/result/{job_id}"
     deadline = time.time() + POLL_TIMEOUT
@@ -178,6 +194,8 @@ def salvar_imagem(
     path: str,
     img: np.ndarray,
     *,
+    img_number: int,
+    model_id: str,
     algorithm: str,
     tempo_inicio: str,
     tempo_final: str,
@@ -185,10 +203,13 @@ def salvar_imagem(
 ):
 
     h, w = img.shape
+    modelo_desc = f"{img_number} - {model_id}"
     fig, ax = plt.subplots(figsize=(5.5, 6.3))
     ax.imshow(img, cmap="gray")
     ax.set_axis_off()
+    ax.set_title(f"Modelo {modelo_desc}", fontsize=11, fontweight="bold")
     caption = (
+        f"Modelo    : {modelo_desc}\n"
         f"Algoritmo : {algorithm}\n"
         f"Inicio    : {tempo_inicio}\n"
         f"Termino   : {tempo_final}\n"
@@ -211,7 +232,9 @@ async def inicializar_cliente(client_id: int):
     # RUNNER_SEED setado, garante (img,algo,ganho) deterministico por client_id
     # em qualquer run, permitindo comparacao pareada Python x Rust.
     rng = random.Random(RUNNER_SEED * 100003 + client_id) if RUNNER_SEED else random
-    img_random = rng.randint(1, 6)
+    # sem filtro: randint(1,6) (comportamento original). Com MODELO_ALVO: sorteia
+    # so entre as imagens daquele modelo.
+    img_random = rng.randint(1, 6) if not MODELO_ALVO else rng.choice(IMGS_PERMITIDAS)
     algo_random = rng.choice(algorithms)
     aplicar_ganho = rng.choice([True, False])
     value = imagem_modelo[img_random]
@@ -257,6 +280,8 @@ async def inicializar_cliente(client_id: int):
     salvar_imagem(
         png_path,
         img_array,
+        img_number=img_random,
+        model_id=value["model_id"],
         algorithm=algo_random,
         tempo_inicio=tempo_inicio,
         tempo_final=tempo_final,

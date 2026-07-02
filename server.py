@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import itertools
 import os
 import time
@@ -11,9 +12,15 @@ import psutil
 import requests
 import scipy.sparse as sp
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse, ORJSONResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-
+import sys
+import subprocess
+import threading
+import uvicorn
+import socket
+import concurrent.futures
+from urllib3.util.retry import Retry
 # Configurações dos modelos disponíveis
 MODELS_CONFIG = {
     "60x60": {"S": 50816, "N": 3600, "shape": (60, 60), "path": "data/H-1.npz"},
@@ -22,35 +29,65 @@ MODELS_CONFIG = {
 # listar os modelos disponíveis
 MODELS: dict = {}
 
-# porta deste worker — usada como prefixo do job_id para o proxy saber rotear o
-# GET /result de volta ao worker dono do job (mesma ideia do servidor Rust).
-# Definida via env var pelo proxy ao spawnar cada worker; default 8000 (modo solo).
 WORKER_PORT = int(os.environ.get("WORKER_PORT", "8000"))
 
-# controle de concorrencia e admissao
-MAX_REQUEST = max(2, (os.cpu_count() or 4) * 2)
-
-# controle de memoria para que o servidor nao fique sobrecarregado
-MEMO_MINIMA = 0.5  # piso abaixo do qual o request espera (nao rejeita)
+# Concorrencia TOTAL alvo da maquina = nucleos * FATOR (um pouco de oversubscription
+# esconde a latencia de polling/serializacao). Esse total e DIVIDIDO entre os
+# workers — cada worker recebe sua fatia em MAX_REQUEST. Antes era cpu*2 POR worker,
+# o que estourava (N_workers * cpu*2 reconstrucoes simultaneas); agora o total fica
+# saudavel (~nucleos*1.5) independente de quantos workers existam.
+FATOR_CONCORRENCIA = 1.5
+_N_WORKERS = max(1, int(os.environ.get("N_WORKERS", "1")))  # setado pelo supervisor
+MAX_REQUEST = max(1, round((os.cpu_count() or 4) * FATOR_CONCORRENCIA / _N_WORKERS))
+MEMO_MINIMA = 0.5  # piso abaixo do qual o request espera
 TEMPO_DE_ESPERA = 300  # so rejeita em ultimo caso, depois de 5 min esperando
-# frequencia de re-checagem da memoria durante a espera (evita busy-loop)
+
+# frequencia de re-checagem da memoria 
 TEMPO_VERIFICACAO = 0.5
-
-# tempo maximo p reconstrucao d img — alinhado com POLL_TIMEOUT do client.py (120s)
-# para o cliente ser o arbitro do prazo, sem teto interno mais agressivo aqui.
+# tempo maximo p reconstrucao d img 
 TEMPO_CONSTRUCAO = 120.0
+GB = 1024**3
+class LimiteDinamico:
+    """Limite de reconstrucoes simultaneas que SOBE e DESCE em runtime conforme a
+    carga (logica do SystemMonitor.swift, aplicada continuamente). Diferente do
+    numero de workers — que e fixo apos o boot — este teto muda a cada poll do
+    monitor_concorrencia. Usado como `async with request_max:`.
 
-request_max = asyncio.Semaphore(MAX_REQUEST)
+    `acquire` espera ate haver vaga (em_execucao < maximo); reconstrucoes ja em
+    andamento nunca sao interrompidas quando o teto baixa — apenas nao entram
+    novas ate o nº cair abaixo do novo teto."""
 
-# jobs assincronos: o POST cria um job e devolve o job_id na hora; o processamento
-# roda em background (asyncio.create_task) e o cliente consulta GET /result/{job_id}.
-# O store fica na memoria do processo, entao o modelo job_id+polling requer WORKERS=1.
-# Em uvicorn multi-worker nao ha sticky routing: o polling pode cair num worker que
-# nao tem o job (404). Para multi-worker seria preciso um store compartilhado.
-# Acesso ao dict e seguro sem lock: tudo roda no mesmo event loop (asyncio e single
-# thread) e a reconstrucao pesada vai para uma thread que nao toca em `jobs`.
+    def __init__(self, maximo: int):
+        self.maximo = maximo
+        self.em_execucao = 0
+        self._cond = asyncio.Condition()
+
+    async def __aenter__(self):
+        async with self._cond:
+            await self._cond.wait_for(lambda: self.em_execucao < self.maximo)
+            self.em_execucao += 1
+        return self
+
+    async def __aexit__(self, *exc):
+        async with self._cond:
+            self.em_execucao -= 1
+            self._cond.notify(1)
+
+    async def set_maximo(self, novo: int):
+        async with self._cond:
+            aumentou = novo > self.maximo
+            self.maximo = novo
+            if aumentou:
+                # abriu vaga(s): acorda os que esperam para reavaliarem a condicao
+                self._cond.notify_all()
+
+
+request_max = LimiteDinamico(MAX_REQUEST)
+# dicionario de jobs
 jobs: dict[str, dict] = {}
+# contador de job_id, para gerar ids unicos e ordenados por chegada
 _job_seq = itertools.count()
+#metrics
 metricas = {
     "no_processo": 0,
     "na_fila": 0,
@@ -62,8 +99,7 @@ metricas = {
     "times_ms": deque(maxlen=500),
 }
 
-
-# carregar o modelo quand
+# carregar o modelo quando solicitado
 def load_model(model_id: str, cfg: dict) -> dict:
     path = Path(cfg["path"])
     if not path.exists():
@@ -106,6 +142,47 @@ async def memoria_monitor(intervalo_s: float = 2.0):
         await asyncio.sleep(intervalo_s)
 
 
+# limite minimo de concorrencia (nunca trava o worker totalmente)
+MIN_CONCORRENTE = 1
+# o throttle de concorrencia reage a MEMORIA DISPONIVEL, nao a CPU%: a reconstrucao
+# e CPU-bound (cada uma ~1 core, memoria desprezivel), entao CPU alta e DESEJAVEL
+# (cores ocupados = trabalho). O que pode travar a maquina e swap -> reagimos ao
+# sinal honesto, a RAM livre. Acima de RAM_FOLGA usa o teto cheio; abaixo de
+# RAM_CRITICA cai ao minimo; entre os dois, linear.
+RAM_FOLGA_GB = 1.5
+RAM_CRITICA_GB = 0.5  # alinhado com MEMO_MINIMA (o guard de OOM de ultimo caso)
+
+
+async def monitor_concorrencia(intervalo_s: float = 1.0):
+    """Ajusta o limite de reconstrucoes simultaneas (request_max) em tempo real, a
+    cada `intervalo_s`, conforme a MEMORIA DISPONIVEL. Normalmente fica no teto
+    (cores ocupados, nada ocioso); so reduz quando a RAM livre aperta, evitando
+    contribuir para swap/travamento. Roda em cada worker."""
+    anterior = None
+    while True:
+        try:
+            disp_gb = psutil.virtual_memory().available / GB
+            if disp_gb >= RAM_FOLGA_GB:
+                novo = MAX_REQUEST
+            elif disp_gb <= RAM_CRITICA_GB:
+                novo = MIN_CONCORRENTE
+            else:
+                ratio = (disp_gb - RAM_CRITICA_GB) / (RAM_FOLGA_GB - RAM_CRITICA_GB)
+                novo = MIN_CONCORRENTE + int(ratio * (MAX_REQUEST - MIN_CONCORRENTE))
+            novo = max(MIN_CONCORRENTE, min(novo, MAX_REQUEST))
+            if novo != anterior:
+                await request_max.set_maximo(novo)
+                print(
+                    f"[concorrencia] disponivel={disp_gb:.2f}GB -> "
+                    f"limite={novo}/{MAX_REQUEST} (em_execucao={request_max.em_execucao})",
+                    flush=True,
+                )
+                anterior = novo
+        except Exception as e:
+            print(f"[concorrencia] erro: {e}", flush=True)
+        await asyncio.sleep(intervalo_s)
+
+
 # gerencia o ciclo de vida do app, e carrega os modelos ao iniciar e limpa ao finalizar
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -121,26 +198,24 @@ async def lifespan(app: FastAPI):
     monitor_task = None
     if not os.environ.get("DISABLE_MONITOR"):
         monitor_task = asyncio.create_task(memoria_monitor())
-    # background GC: limpa jobs terminais lidos ha mais de GRACA_RESULT_S
+    # ajuste dinamico do limite de concorrencia por carga — roda SEMPRE (em cada
+    # worker), pois e o que throttla as reconstrucoes, nao apenas um log.
+    conc_task = asyncio.create_task(monitor_concorrencia())
+    #limpa os jobs prontos a cada 1s, que ainda estao na memoria apos 1 min
     gc_task = asyncio.create_task(_gc_jobs())
     yield
-    gc_task.cancel()
-    try:
-        await gc_task
-    except asyncio.CancelledError:
-        pass
-    if monitor_task is not None:
-        monitor_task.cancel()
-        try:
-            await monitor_task
-        except asyncio.CancelledError:
-            pass
+    for task in (gc_task, conc_task, monitor_task):
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     MODELS.clear()
 
 
 # cria a instancia do fastapi
 # definindo o ciclo de vida do app para carregar os modelos ao iniciar e limpar ao finalizar
-# optamos por usar ORJSONResponse para melhorar a performance na serialização de respostas JSON
 app = FastAPI(lifespan=lifespan)
 
 
@@ -245,22 +320,12 @@ class Sinal(BaseModel):
     g: list[float]
 
 
-# Modelo assincrono: o POST valida o request, cria um job, dispara a reconstrucao
-# em background (asyncio.create_task) e responde na hora com {job_id}. O cliente
-# consulta o resultado depois em GET /result/{job_id}.
-# `cliente_id` e `complete` ficam no signature por compatibilidade com o cliente
-# (que ainda os envia) mas nao sao usados — nao ha mais estado por cliente.
-
-
+# funcao assincrona: p receber sinal, e criar um processo e realizar reconstrucao em background e retornar o id do job
 @app.post("/reconstruct/{model_id}")
 async def reconstruct(
     cliente_id: str, algorithm: str, model_id: str, sinal: Sinal, complete: bool = True
 ):
-    """
-    Recebe o sinal g completo, cria um job, dispara a reconstrucao em background
-    e responde imediatamente com o job_id (a conexao do POST nao fica presa).
-    """
-    # validacoes rapidas: falham na hora (sincronas), sem criar job.
+    #verifica se o modelo existe
     if model_id not in MODELS:
         return JSONResponse(
             status_code=404,
@@ -269,7 +334,7 @@ async def reconstruct(
                 "error": f"modelo '{model_id}' não encontrado. segue os modelos disponiveis: {list(MODELS.keys())}",
             },
         )
-
+    # verifica a compatibilidade
     esperado = MODELS[model_id]["S"]
     if len(sinal.g) != esperado:
         return JSONResponse(
@@ -280,11 +345,11 @@ async def reconstruct(
             },
         )
 
-    # array de g vem direto do request (sem acumulacao por cliente)
+    #sinal
     g = np.asarray(sinal.g, dtype=np.float32)
 
     # cria o job (estado pending) e dispara o processamento em background.
-    # prefixo = porta do worker, para o proxy rotear o /result de volta pra ca.
+    # o worker responsavel pelo processo é o prefixo do id, e o proxy redireciona a consulta do job para a porta do worker
     job_id = f"{WORKER_PORT}-{next(_job_seq)}"
     jobs[job_id] = {"status": "pending"}
     asyncio.create_task(processar_reconstrucao(job_id, algorithm, model_id, g))
@@ -292,15 +357,12 @@ async def reconstruct(
     return JSONResponse(status_code=202, content={"status": "pending", "job_id": job_id})
 
 
-# Executa a reconstrucao de um job em background e grava o resultado final em
-# jobs[job_id]. Aplica a mesma politica de admissao (espera memoria, semaforo,
-# timeout) que a versao sincrona usava.
+# Executa a reconstrucao de um job em background e grava o resultado final em jobs[job_id].
 async def processar_reconstrucao(
     job_id: str, algorithm: str, model_id: str, g: np.ndarray
 ):
-    GB = 1024**3
-    # admission control por pressao de memoria: nao rejeita por padrao, espera ate a
-    # memoria aliviar. So rejeita em ultimo caso, depois de TEMPO_DE_ESPERA.
+    
+    # controle de recurso, esperando ter memoria minima livre, entao ele aguarda ate no maximo 5 min
     if psutil.virtual_memory().available < MEMO_MINIMA * GB:
         metricas["esperando_memo"] += 1
         espera_deadline = time.monotonic() + TEMPO_DE_ESPERA
@@ -326,6 +388,7 @@ async def processar_reconstrucao(
             try:
                 start_dt = datetime.now()
                 t0 = time.perf_counter()
+                #cria uma thread para construcao da imagem
                 result = await asyncio.wait_for(
                     asyncio.to_thread(reconstruct_image, algorithm, model_id, g),
                     timeout=TEMPO_CONSTRUCAO,
@@ -387,14 +450,9 @@ async def processar_reconstrucao(
     }
 
 
-# GET /result/{job_id}: devolve o estado do job. pending => {"status":"pending"};
-# pronto => o corpo final (com a imagem ou o erro). IDEMPOTENTE: a entrada
-# terminal nao e removida imediatamente, fica disponivel para retries da camada
-# de transporte (urllib3.Retry no proxy) por GRACA_RESULT_S segundos antes da
-# limpeza pelo background _gc_jobs(). Inexistente => 404.
 GRACA_RESULT_S = 60.0
 
-
+# consulta o job, retorna ou pendente ou o resultado
 @app.get("/result/{job_id}")
 async def result(job_id: str):
     job = jobs.get(job_id)
@@ -412,11 +470,8 @@ async def result(job_id: str):
     http = job.get("_http", 200)
     return JSONResponse(status_code=http, content=body)
 
-
+#remove os processos lidos ha mais de 60s
 async def _gc_jobs():
-    """Remove jobs terminais lidos ha mais de GRACA_RESULT_S segundos. Roda em
-    background; granularidade de 1s e suficiente — o objetivo e nao acumular
-    indefinidamente, nao reciclar memoria rapido."""
     while True:
         try:
             agora = time.monotonic()
@@ -439,7 +494,7 @@ def _percentile(sorted_values: list[float], p: float) -> float | None:
     k = max(0, min(n - 1, int(round(p * (n - 1)))))
     return sorted_values[k]
 
-
+# metricas 
 def metrics():
     times = sorted(metricas["times_ms"])
     vm = psutil.virtual_memory()
@@ -481,21 +536,16 @@ def metrics():
     }
 
 
-# =============================================================================
-#             proxy: load balancer com roteamento de job para o worker
-# =============================================================================
+
 #
-# Mesma arquitetura do servidor Rust:
-#
-#   cliente HTTP ─────► proxy (porta 8000) ─────┬─► worker 1 (porta 8001)
-#                            │                   ├─► worker 2 (porta 8002)
-#                            └ memory monitor    └─► worker N (porta 800N)
+# Mesma arquitetura do servidor Rust: load balancer com workers
 #
 # - POST /reconstruct e distribuido por round-robin entre os workers.
+# Entao as requisicoes sao distribuidas de modo balanceado entre os workers
 # - O job_id devolvido vem prefixado com a porta do worker dono (`porta-seq`),
-#   entao o GET /result/{job_id} e roteado de volta para o mesmo worker — e o
-#   equivalente do sticky routing, agora por job em vez de por cliente_id.
-# - Cada worker tem seu proprio store de jobs em memoria; nao precisa replicar.
+#   entao o GET /result/{job_id} e roteado de volta para o mesmo worker 
+# Entao o 
+# - Cada worker tem seu proprio store de jobs em memoria;
 
 # portas dos workers backend. Cada processo de proxy (uvicorn multi-worker) herda
 # a lista via env var WORKER_PORTS_ENV, setada pelo supervisor antes de subir os
@@ -514,58 +564,153 @@ _proxy_session: "requests.Session | None" = None
 PROXY_POOL = int(os.environ.get("PROXY_POOL", "128"))
 
 
-# monitor de memoria (sincrono, roda numa thread do supervisor): 1 linha agregada/s
-# somando o RSS do supervisor + toda a sua arvore (proxies, workers e os launchers
-# do venv). Somamos a arvore (children recursive) porque o python.exe do venv no
-# Windows e um launcher: o processo real e um neto, nao o pid direto.
-def proxy_memoria_monitor(root_pid: int, intervalo_s: float = 1.0):
-    GB = 1024**3
-    while True:
+# monitor de memoria para o proxy
+# ele monitora o sistema e o processo do proxy
+# imprime a memoria usada e disponivel do sistema
+class MonitorRecursos:
+    """Amostra CPU% e RSS da arvore de processos do server (supervisor + proxies +
+    workers) a cada `intervalo_s`, grava num CSV e, ao parar, gera um grafico PNG
+    para analisar o uso de CPU/memoria ao longo da vida do servidor.
+
+    Roda numa thread daemon. stop() sinaliza, espera a thread fechar o CSV e entao
+    gera o grafico na thread principal (matplotlib Agg) — feito ANTES de matar os
+    workers, com o server ainda no ar."""
+
+    def __init__(
+        self,
+        root_pid: int,
+        csv_path: str = "recursos_python_server.csv",
+        png_path: str = "recursos_python_server.png",
+        intervalo_s: float = 1.0,
+    ):
+        self.root_pid = root_pid
+        self.csv_path = csv_path
+        self.png_path = png_path
+        self.intervalo_s = intervalo_s
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._amostras: list[list] = []
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self, gerar_grafico: bool = True):
+        self._stop.set()
+        self._thread.join(timeout=10)
+        if gerar_grafico:
+            self._gerar_grafico()
+
+    def _arvore(self):
         try:
-            vm = psutil.virtual_memory()
-            rss = 0
-            try:
-                raiz = psutil.Process(root_pid)
-                for pr in [raiz, *raiz.children(recursive=True)]:
+            raiz = psutil.Process(self.root_pid)
+            return [raiz, *raiz.children(recursive=True)]
+        except psutil.Error:
+            return []
+
+    def _run(self):
+        GB = 1024**3
+        # mantem um psutil.Process por pid entre os ticks: cpu_percent(interval=None)
+        # so retorna valor real a partir da 2a chamada (a 1a so fixa o baseline).
+        trackers: dict[int, psutil.Process] = {}
+        psutil.cpu_percent(interval=None)  # prime CPU do sistema
+        t0 = time.perf_counter()
+        with open(self.csv_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(
+                ["t_s", "cpu_app_pct", "rss_app_gb", "cpu_sys_pct",
+                 "mem_used_gb", "mem_avail_gb", "n_procs"]
+            )
+            while not self._stop.is_set():
+                procs = self._arvore()
+                vivos = set()
+                cpu_app = 0.0
+                rss_app = 0
+                for pr in procs:
+                    pid = pr.pid
+                    vivos.add(pid)
+                    if pid not in trackers:
+                        trackers[pid] = pr
+                        try:
+                            pr.cpu_percent(interval=None)  # baseline
+                        except psutil.Error:
+                            pass
                     try:
-                        rss += pr.memory_info().rss
+                        cpu_app += trackers[pid].cpu_percent(interval=None)
+                        rss_app += trackers[pid].memory_info().rss
                     except psutil.Error:
                         pass
-            except psutil.Error:
-                pass
-            ts = datetime.now().strftime("%H:%M:%S")
-            print(
-                f"[memoria {ts}] sistema usada={vm.used/GB:.2f}GB "
-                f"disponivel={vm.available/GB:.2f}GB / total={vm.total/GB:.2f}GB "
-                f"({vm.percent:.1f}%) | uso da app ={rss/GB:.2f}GB",
-                flush=True,
-            )
-        except Exception as e:
-            print(f"[memoria] erro: {e}", flush=True)
-        time.sleep(intervalo_s)
+                for pid in [p for p in trackers if p not in vivos]:
+                    del trackers[pid]
+                vm = psutil.virtual_memory()
+                cpu_sys = psutil.cpu_percent(interval=None)
+                row = [
+                    round(time.perf_counter() - t0, 1),
+                    round(cpu_app, 1),
+                    round(rss_app / GB, 3),
+                    round(cpu_sys, 1),
+                    round(vm.used / GB, 3),
+                    round(vm.available / GB, 3),
+                    len(procs),
+                ]
+                w.writerow(row)
+                f.flush()
+                self._amostras.append(row)
+                # tambem ecoa no terminal (mantem o comportamento antigo de 1 linha/s)
+                ts = datetime.now().strftime("%H:%M:%S")
+                print(
+                    f"[recursos {ts}] cpu_app={row[1]:.0f}% rss_app={row[2]:.2f}GB "
+                    f"cpu_sys={row[3]:.0f}% disponivel={row[5]:.2f}GB",
+                    flush=True,
+                )
+                self._stop.wait(self.intervalo_s)
 
+    def _gerar_grafico(self):
+        if not self._amostras:
+            print("[recursos] sem amostras, grafico nao gerado", flush=True)
+            return
+        # import lazy: so o supervisor plota; nao infla a RAM dos workers/proxies
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
 
+        ts = [a[0] for a in self._amostras]
+        cpu_app = [a[1] for a in self._amostras]
+        rss_app = [a[2] for a in self._amostras]
+        cpu_sys = [a[3] for a in self._amostras]
+        mem_avail = [a[5] for a in self._amostras]
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+        ax1.plot(ts, cpu_app, color="tab:blue", label="CPU app (%)")
+        ax1.plot(ts, cpu_sys, color="tab:orange", alpha=0.5, label="CPU sistema (%)")
+        ax1.set_ylabel("CPU (%)")
+        ax1.set_title("Uso de recursos - server Python")
+        ax1.legend(loc="upper right")
+        ax1.grid(True, alpha=0.3)
+        ax2.plot(ts, rss_app, color="tab:red", label="RSS app (GB)")
+        ax2.plot(ts, mem_avail, color="tab:green", alpha=0.5, label="RAM disponivel (GB)")
+        ax2.set_ylabel("Memoria (GB)")
+        ax2.set_xlabel("tempo (s)")
+        ax2.legend(loc="upper right")
+        ax2.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(self.png_path, dpi=110)
+        plt.close(fig)
+        print(f"[recursos] salvo: {self.csv_path} + {self.png_path}", flush=True)
+
+# gerencia o ciclo de vida do proxy
 @asynccontextmanager
 async def proxy_lifespan(app: FastAPI):
-    # cada processo de proxy: amplia o executor do loop (forwards via requests em
-    # to_thread) e abre uma Session com keep-alive + pool para o hop proxy->worker.
-    # Offloadar o I/O para threads deixa o event loop livre para fazer accept() —
-    # com varios processos de proxy dividindo a carga, isso escala.
-    import concurrent.futures
-
+    # inicializa o executor e a session do proxy
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=PROXY_POOL, thread_name_prefix="proxy-fwd"
     )
     asyncio.get_running_loop().set_default_executor(executor)
+    # o executor serve para offloadar o I/O dos requests para threads
 
-    from urllib3.util.retry import Retry
-
+    # proxy session serve para manter as conexoes vivas e limitar a quantidade de conexoes simultaneas com os workers
     global _proxy_session
     _proxy_session = requests.Session()
-    # retry leve no proxy->worker: cobre o caso em que o worker fecha a conexao
-    # (TIME_WAIT no Windows reciclando porta efemera) antes do proxy enviar o
-    # request — RemoteDisconnected vira 502 sem retry. Com backoff de 0.1s
-    # o cliente nao percebe a diferenca.
+
+    # o adapter serve para configurar o pool de conexoes e os retrys das conexoes com os workers
     adapter = requests.adapters.HTTPAdapter(
         pool_connections=max(4, len(WORKER_PORTS)),
         pool_maxsize=PROXY_POOL,
@@ -576,6 +721,7 @@ async def proxy_lifespan(app: FastAPI):
             allowed_methods=["GET", "POST"],
         ),
     )
+    # montamos o adapter para http://, que e o esquema usado para falar com os workers (http://<worker_port>)
     _proxy_session.mount("http://", adapter)
 
     yield
@@ -585,10 +731,10 @@ async def proxy_lifespan(app: FastAPI):
 
 proxy_app = FastAPI(lifespan=proxy_lifespan)
 
-
+# endpoint de reconstrucao do proxy, ele recebe a request do cliente, extrai o model_id e o corpo, escolhe um worker por round-robin e encaminha a request p worker.
 @proxy_app.post("/reconstruct/{model_id}")
 async def proxy_reconstruct(model_id: str, request: Request):
-    # round-robin: distribuicao uniforme entre os workers.
+    # roundrobin usado para distribuir a carga entre os workers de modo que cada worker receba de forma equilibrada as requests
     port = WORKER_PORTS[next(_rr) % len(WORKER_PORTS)]
     body = await request.body()
     params = dict(request.query_params)
@@ -609,11 +755,10 @@ async def proxy_reconstruct(model_id: str, request: Request):
         )
     return Response(content=r.content, status_code=r.status_code, media_type="application/json")
 
-
+# endpoint do resultado, ele extrai a porta do worker que esta responsavel pelo job a partir do jobid, e encaminha a request p worker.
+# ele retorna o resultado do worker ao cliente
 @proxy_app.get("/result/{job_id}")
 async def proxy_result(job_id: str):
-    # o job_id e prefixado com a porta do worker dono (`porta-seq`), entao
-    # roteamos o polling de volta para o mesmo worker que criou o job.
     prefixo = job_id.split("-", 1)[0]
     try:
         port = int(prefixo)
@@ -634,12 +779,12 @@ async def proxy_result(job_id: str):
         )
     return Response(content=r.content, status_code=r.status_code, media_type="application/json")
 
-
+# endpoint para verificar a saude do proxy
 @proxy_app.get("/health")
 async def proxy_health():
     return {"status": "ok", "mode": "proxy", "workers": WORKER_PORTS}
 
-
+# processo p verificar se o worker subiu e esta respondendo em /health, com timeout de 60s. Retorna True se responder 200, False se nao responder em 60s.
 def _esperar_health(port: int, timeout_s: int = 60) -> bool:
     """Espera o worker responder em /health (carrega os modelos antes)."""
     deadline = time.monotonic() + timeout_s
@@ -660,23 +805,13 @@ def _parse_arg(args: list[str], flag: str, default: str) -> str:
             return args[i + 1]
     return default
 
-
+# verifica se a porta esta livre
 def _porta_livre(port: int) -> bool:
-    """True se nada esta escutando em 127.0.0.1:port."""
-    import socket
-
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(("127.0.0.1", port)) != 0
 
-
+#elimina o processo e seus filhos p liberar recursos
 def _matar_arvore(proc) -> None:
-    """Encerra um worker filho e toda a sua arvore de processos.
-
-    Necessario porque o python.exe do venv no Windows e um launcher: o worker
-    real do uvicorn (que faz o bind da porta) e um neto do proxy. Matar so
-    proc.pid deixaria o neto vivo, segurando a porta — e foi por isso que os
-    workers vazaram entre runs e acumularam WinError 10048.
-    """
     try:
         parent = psutil.Process(proc.pid)
     except psutil.NoSuchProcess:
@@ -695,42 +830,73 @@ def _matar_arvore(proc) -> None:
         except psutil.Error:
             pass
 
-
+# funcao p verificar se o server esta vivo e os modelos carregados
 @app.get("/health")
 async def health():
     return {"status": "ok", "models": list(MODELS.keys())}
 
 
-if __name__ == "__main__":
-    import sys
-    import subprocess
-    import threading
-    import uvicorn
+MIN_WORKERS = 1
+# RAM media que cada worker ocupa so com os modelos H carregados (~0.8GB medido
+# nesta base). E o custo FIXO por worker, e portanto o que limita quantos cabem.
+RAM_POR_WORKER_GB = 0.8
+# folga reservada p/ o SO + proxies + working set transitorio das reconstrucoes.
+MARGEM_GB = 1.0
 
+
+def calcular_topologia() -> tuple[int, int]:
+    """Calcula (n_workers, n_proxies) escalando com os DOIS recursos da maquina:
+    workers = min(teto_cpu, teto_ram). Maquina mais forte (mais nucleos/RAM) sobe
+    os dois tetos -> mais workers; mais fraca -> menos. O teto de RAM e o que evita
+    saturar/swappar (cada worker custa ~0.8GB fixo). Usa RAM *disponivel*, entao
+    tambem adapta ao que ja esta rodando na maquina.
+
+    As env vars WORKERS / PROXIES, se setadas, sobrescrevem o calculo."""
+    cpu = os.cpu_count() or 2
+    disp_gb = psutil.virtual_memory().available / GB
+
+    # teto por CPU: paralelismo util ~ nucleos. teto por RAM: quantos workers cabem.
+    teto_cpu = max(2, cpu // 2)
+    teto_ram = max(1, int((disp_gb - MARGEM_GB) / RAM_POR_WORKER_GB))
+    n_workers = min(teto_cpu, teto_ram)
+
+    # proxies sao leves (so encaminham, nao carregam modelo): bound por CPU, com teto.
+    n_proxies = max(1, min(cpu // 2, 4))
+
+    # env vars sobrescrevem o calculo automatico
+    n_workers = int(os.environ.get("WORKERS", n_workers))
+    n_proxies = int(os.environ.get("PROXIES", n_proxies))
+    print(
+        f"[supervisor] topologia: cpu={cpu} disponivel={disp_gb:.1f}GB -> "
+        f"workers={n_workers} (teto_cpu={teto_cpu}, teto_ram={teto_ram}) proxies={n_proxies}",
+        flush=True,
+    )
+    return n_workers, n_proxies
+
+
+if __name__ == "__main__":
+  
     args = sys.argv[1:]
     is_worker = "--worker" in args
     port = int(_parse_arg(args, "--port", "8000"))
 
-    # backlog=8192 / limit_concurrency=2000: ver justificativa no fim do arquivo.
+    
     if is_worker:
-        # modo worker: serve o `app` (reconstrucao) na sua porta. job_id usa WORKER_PORT.
+       #inicia um worker para servir o app principal.
         uvicorn.run(
             "server:app", host="0.0.0.0", port=port,
             backlog=8192, limit_concurrency=2000,
         )
     else:
-        # modo supervisor: spawna N backend workers (1x) e sobe P processos de proxy
-        # via uvicorn multi-worker (todos compartilham o socket da porta `port`, o
-        # kernel distribui o accept entre eles). Varios proxies removem o gargalo do
-        # proxy single-process.
-        # default 4 workers backend: mais capacidade de accept no hop proxy->worker
-        # (com 2 workers, parte dos forwards eram recusados -> 502 sob carga alta).
-        n_workers = int(os.environ.get("WORKERS", "4"))
-        n_proxies = int(os.environ.get("PROXIES", "4"))
+        # orquestrador: inicia os workers backend e o proxy frontend.
+        # worker é um processo independente que realiza o processamento pesado de reconstrução de imagens. 
+        # Cada worker carrega os modelos em memória e expõe a API para receber solicitações de reconstrução e retornar resultados.
+        # O proxy, por outro lado, é responsável por receber as solicitações dos clientes e distribuí-las entre os workers disponíveis, além de monitorar a memória do sistema para evitar sobrecarga.
+        n_workers, n_proxies = calcular_topologia()
+        #ajusta as portas dos workers para evitar conflitos, cada worker recebe uma porta única incrementada a partir da porta base (8000). O proxy escuta na porta 8000 e encaminha as solicitações para os workers nas portas 8001, 8002, etc.
         worker_ports = [port + 1 + i for i in range(n_workers)]
 
-        # pre-flight: aborta se alguma porta ja estiver ocupada (ex: orfao de um run
-        # anterior). Sem isso, o worker carrega ~600MB de modelos so para falhar no bind.
+        # se a porta ja estiver em uso, aborta
         ocupadas = [p for p in (port, *worker_ports) if not _porta_livre(p)]
         if ocupadas:
             print(
@@ -739,44 +905,44 @@ if __name__ == "__main__":
             )
             sys.exit(1)
 
+        # lista de processos filhos (workers)
         children: list[subprocess.Popen] = []
         print(f"[supervisor] iniciando {n_workers} workers nas portas {worker_ports}")
         for p in worker_ports:
             env = os.environ.copy()
             env["WORKER_PORT"] = str(p)      # prefixo do job_id
             env["DISABLE_MONITOR"] = "1"     # so o supervisor monitora memoria
+            env["N_WORKERS"] = str(n_workers)  # p/ o worker dividir a concorrencia total
             child = subprocess.Popen(
                 [sys.executable, "server.py", "--worker", "--port", str(p)], env=env
             )
             children.append(child)
 
-        # espera todos os workers responderem /health (carregam modelos antes)
+        # aqui faz a verfificao p saber se os workers subiram. caso nao subiram em 60s, manda um aviso no terminal
         for p in worker_ports:
             if not _esperar_health(p, 60):
                 print(f"[supervisor] worker {p} nao subiu em 60s")
         print(f"[supervisor] {n_workers} workers prontos em {worker_ports}")
 
-        # passa as portas dos workers para os processos de proxy (eles herdam o env
-        # no spawn e populam WORKER_PORTS no import).
+        # passa as portas dos workers para os processos de proxy 
         os.environ["WORKER_PORTS_ENV"] = ",".join(str(p) for p in worker_ports)
 
-        # monitor de memoria agregado roda no supervisor (1 linha/s sobre toda a
-        # arvore: proxies + workers). Daemon thread para nao travar a saida.
-        threading.Thread(
-            target=proxy_memoria_monitor, args=(os.getpid(),), daemon=True
-        ).start()
+        # monitora CPU+memoria da arvore toda (supervisor + proxies + workers),
+        # gravando recursos_python_server.csv a cada 1s.
+        monitor = MonitorRecursos(os.getpid())
+        monitor.start()
 
         print(f"[supervisor] subindo {n_proxies} processos de proxy na porta {port}")
         try:
-            # uvicorn multi-worker: o parent (este processo) faz o bind e passa o
-            # socket para os P processos filhos de proxy, que servem proxy_app.
+            #roda o proxy com multiworkers do server
             uvicorn.run(
                 "server:proxy_app", host="0.0.0.0", port=port, workers=n_proxies,
                 backlog=8192, limit_concurrency=2000,
             )
         finally:
-            # cleanup: encerra os backend workers (e suas arvores). Os processos de
-            # proxy sao encerrados pelo proprio uvicorn ao sair.
+            # para o monitor e gera o grafico ANTES de matar os workers (server ainda
+            # vivo). So depois encerra a arvore de processos filhos.
+            monitor.stop(gerar_grafico=True)
             print("\n[supervisor] encerrando workers...")
             for c in children:
                 _matar_arvore(c)

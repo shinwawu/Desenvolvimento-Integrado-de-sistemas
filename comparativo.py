@@ -9,15 +9,20 @@ faz suas escolhas (img/algo/ganho) com seu proprio random.
 """
 
 import argparse
+import csv
 import os
 import random
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")  # backend headless, seguro fora da main thread
+import matplotlib.pyplot as plt
 import pandas as pd
 import psutil
 
@@ -30,9 +35,9 @@ HOST = "127.0.0.1"
 PORT = 8000
 N_INSTANCIAS = 3
 N_TASKS_POR_INSTANCIA = 300
-# numero de workers backend por servidor: 2 para ambos (comparacao simetrica).
-N_WORKERS_PYTHON = 2
-N_WORKERS_RUST = 2
+# O numero de workers NAO e mais calculado aqui: cada server decide o seu na
+# inicializacao (logica por carga em server.py / main.rs). O comparativo so nao
+# passa WORKERS / --workers, deixando o calculo interno valer.
 
 
 def porta_em_uso() -> bool:
@@ -289,12 +294,13 @@ def rodar_contra_server(
     nome: str,
     cmd: list,
     seeds: list[int],
-    n_workers: int,
     ready_timeout: int = 120,
     env: dict | None = None,
 ) -> dict:
+    # nº de workers e decidido pelo proprio server na inicializacao (ver o log
+    # .comparativo_<nome>_server.log: linha "workers por carga: ...").
     print(
-        f"\n{'='*64}\n  {nome}: {N_INSTANCIAS} clients.py x {N_TASKS_POR_INSTANCIA} reqs ({n_workers} workers)\n{'='*64}"
+        f"\n{'='*64}\n  {nome}: {N_INSTANCIAS} clients.py x {N_TASKS_POR_INSTANCIA} reqs (workers definidos pelo server)\n{'='*64}"
     )
     if not aguardar_porta_livre(timeout_s=20):
         raise RuntimeError(f"porta {PORT} ocupada antes de subir {nome}")
@@ -340,15 +346,17 @@ def rodar_contra_server(
         time.sleep(2)
 
 
-def gerar_relatorios(resultados: list[dict], seed: int) -> None:
-    """Gera UM unico CSV (relatorio_comparativo.csv) onde cada linha e uma
-    metrica e as colunas trazem o valor de cada versao + analise (delta, razao,
-    vencedor). Se so uma versao rodou, emite a tabela simples (1 linha por server)."""
+def gerar_relatorios(resultados: list[dict], seed: int, modelo: str = "ambos") -> None:
+    """Gera UM unico CSV (relatorio_comparativo[_<modelo>].csv) onde cada linha e
+    uma metrica e as colunas trazem o valor de cada versao. Se so uma versao rodou,
+    emite a tabela simples (1 linha por server). O sufixo do modelo evita que as
+    rodadas 30x30 e 60x60 sobrescrevam o CSV uma da outra."""
     if not resultados:
         print("nenhum resultado para reportar")
         return
 
-    out_path = Path("relatorio_comparativo.csv")
+    sufixo = "" if modelo == "ambos" else f"_{modelo}"
+    out_path = Path(f"relatorio_comparativo{sufixo}.csv")
     servers = {r["server"]: r for r in resultados}
 
     print("\n" + "=" * 64)
@@ -401,7 +409,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rust-bin", default=RUST_BIN_DEFAULT)
     ap.add_argument("--only", choices=["python", "rust", "ambos"], default="ambos")
+    ap.add_argument(
+        "--modelo", choices=["30x30", "60x60", "ambos"], default="ambos",
+        help="restringe a carga a um unico modelo (via MODELO_ALVO no client.py)",
+    )
     args = ap.parse_args()
+
+    # filtro de modelo: propaga para os clientes (Python e Rust) via env var, que
+    # o client.py le para sortear so as imagens do modelo escolhido.
+    if args.modelo != "ambos":
+        os.environ["MODELO_ALVO"] = args.modelo
+        print(f"modelo: SOMENTE {args.modelo}")
 
     # apaga relatorios preservados de invocacoes anteriores antes de comecar
     limpar_relatorios_antigos()
@@ -415,16 +433,17 @@ def main():
     instance_seeds = [rng.randint(0, 2**31 - 1) for _ in range(N_INSTANCIAS)]
     print(f"seed base: {seed}  seeds das instancias: {instance_seeds}")
 
-    # contagem de workers assimetrica: Python via env var WORKERS; Rust via --workers
+    # workers NAO sao passados: cada server calcula o seu na inicializacao (logica
+    # por carga). Por isso nao setamos WORKERS (Python) nem --workers (Rust).
     py_cmd = [sys.executable, "-u", "server.py"]
-    py_env = {**os.environ, "WORKERS": str(N_WORKERS_PYTHON)}
+    py_env = {**os.environ}
     rust_path = Path(args.rust_bin)
 
     resultados = []
     if args.only in ("python", "ambos"):
         resultados.append(
             rodar_contra_server(
-                "Python", py_cmd, instance_seeds, N_WORKERS_PYTHON, env=py_env
+                "Python", py_cmd, instance_seeds, env=py_env
             )
         )
     if args.only in ("rust", "ambos"):
@@ -436,12 +455,12 @@ def main():
         if not rust_path.exists():
             print(f"[Rust] binario nao encontrado: {rust_path} — pulando")
         else:
-            rust_cmd = [str(rust_path), "--workers", str(N_WORKERS_RUST)]
+            rust_cmd = [str(rust_path)]
             resultados.append(
-                rodar_contra_server("Rust", rust_cmd, instance_seeds, N_WORKERS_RUST)
+                rodar_contra_server("Rust", rust_cmd, instance_seeds)
             )
 
-    gerar_relatorios(resultados, seed=seed)
+    gerar_relatorios(resultados, seed=seed, modelo=args.modelo)
 
 
 if __name__ == "__main__":

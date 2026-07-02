@@ -18,12 +18,11 @@ use poem::{
 use serde::Deserialize;
 use serde_json::json;
 use sprs::CsMat;
-use tokio::sync::Semaphore;
+use tokio::sync::Notify;
 use faer::sparse::{SparseColMat, SymbolicSparseColMat};
 use faer::sparse::linalg::matmul::sparse_dense_matmul;
 use faer::{Accum, Par};
 
-// Allocator paralelo, ~5-15% melhor que o default do Windows sob alta carga.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -31,38 +30,24 @@ type F = f32;
 
 const MAX_ITER: usize = 10;
 const TOL: F = 1e-4;
-// tempo maximo p reconstrucao d img — alinhado com POLL_TIMEOUT do client.py (120s)
-// para o cliente ser o arbitro do prazo, sem teto interno mais agressivo aqui.
+// tempo maximo p reconstrucao d img
+
 const TEMPO_CONSTRUCAO: u64 = 120;
-// piso de memoria abaixo do qual o request espera (nao rejeita).
-// 0.05GB: os modelos H/Ht sao carregados UMA vez no startup e compartilhados via
-// Arc; cada reconstrucao usa so alguns KB de vetores de trabalho. Um piso alto
-// (0.5GB) era contraproducente aqui — o proprio footprint estatico dos modelos
-// (~2.3GB nos 2 workers) ja derruba o available do sistema abaixo de 0.5GB, e no
-// macOS o sysinfo ainda sub-reporta available (conta cache reclamavel como usado),
-// fazendo TODO request travar no wait-loop e estourar timeout (0 reconstrucoes).
 const MEMO_MINIMA: f64 = 0.05;
-// so rejeita em ultimo caso, depois de 5 min esperando (evita deadlock em OOM real)
+// so rejeita em ultimo caso, depois de 5 min esperando 
 const TEMPO_DE_ESPERA: u64 = 300;
-// frequencia de re-checagem da memoria durante a espera (em ms)
+// frequencia de re-checagem da memoria durante a espera 
 const TEMPO_VERIFICACAO_MS: u64 = 500;
 
+// classe criada para armazenar modelo H
 struct Model {
-    // faer SparseColMat (CSC): kernel SIMD do sparse_dense_matmul opera direto
-    // sobre CSC. Cada coluna pode ser vetorizada com AVX2/AVX-512 (target-native).
-    // sprs era so para parsing do npz; aqui armazenamos no formato que faer roda.
-    //
-    // So armazenamos H. O produto transposto Hᵀ·r e computado direto sobre os
-    // arrays CSC de H (ver csc_transpose_matvec), sem materializar Hᵀ — corta o
-    // footprint de memoria pela metade (~330MB por modelo 60x60 nesta maquina),
-    // o que importa porque o gargalo aqui e memoria, nao CPU.
     h: SparseColMat<usize, F>,
     s: usize,
     n: usize,
     shape: (usize, usize),
 }
 
-// Estado de um job assincrono. Pending enquanto a reconstrucao roda em background;
+// Estado de um job assincrono. Pending enquanto a reconstrucao roda em background
 // Ready quando termina (sucesso ou erro), guardando o corpo JSON ja serializado e
 // o status HTTP que o /result deve devolver.
 enum JobState {
@@ -70,20 +55,88 @@ enum JobState {
     Ready { status_code: u16, body: String },
 }
 
+/// Limite de reconstrucoes simultaneas que SOBE e DESCE em runtime conforme a
+/// carga (logica do SystemMonitor.swift, aplicada continuamente pelo
+/// spawn_monitor_concorrencia). Diferente do nº de workers — fixo apos o boot —
+/// este teto muda a cada 1s. `acquire().await` espera ate haver vaga; uma
+/// reconstrucao em andamento nunca e interrompida quando o teto baixa: apenas
+/// nao entram novas ate em_execucao cair abaixo do novo teto.
+struct LimiteDinamico {
+    estado: Mutex<(usize, usize)>, // (maximo, em_execucao)
+    notify: Notify,
+}
+
+impl LimiteDinamico {
+    fn new(maximo: usize) -> Self {
+        Self { estado: Mutex::new((maximo, 0)), notify: Notify::new() }
+    }
+
+    async fn acquire(self: &Arc<Self>) -> PermitDinamico {
+        loop {
+            // registra o waiter ANTES de checar a condicao (enable()), senao um
+            // notify entre a checagem e o await seria perdido.
+            let espera = self.notify.notified();
+            tokio::pin!(espera);
+            espera.as_mut().enable();
+            {
+                let mut e = self.estado.lock().unwrap();
+                if e.1 < e.0 {
+                    e.1 += 1;
+                    return PermitDinamico { limite: self.clone() };
+                }
+            }
+            espera.await;
+        }
+    }
+
+    fn set_maximo(&self, novo: usize) {
+        let aumentou = {
+            let mut e = self.estado.lock().unwrap();
+            let a = novo > e.0;
+            e.0 = novo;
+            a
+        };
+        // se o teto subiu, acorda os que esperam para reavaliarem a condicao
+        if aumentou {
+            self.notify.notify_waiters();
+        }
+    }
+
+    fn em_execucao(&self) -> usize {
+        self.estado.lock().unwrap().1
+    }
+}
+
+/// Solta a vaga ao ser dropado (fim da reconstrucao) e acorda quem espera.
+struct PermitDinamico {
+    limite: Arc<LimiteDinamico>,
+}
+
+impl Drop for PermitDinamico {
+    fn drop(&mut self) {
+        {
+            let mut e = self.limite.estado.lock().unwrap();
+            e.1 -= 1;
+        }
+        self.limite.notify.notify_waiters();
+    }
+}
+
+// estado global do worker
 struct AppState {
+    //modelos
     models: HashMap<String, Arc<Model>>,
-    // semaforo limita reconstrucoes simultaneas (CPU/cache).
-    request_max: Arc<Semaphore>,
-    // jobs assincronos deste worker, indexados por job_id. O processamento roda em
-    // background e o cliente consulta o resultado via GET /result/{job_id}.
+    // limite dinamico de reconstrucoes simultaneas (ajustado por carga)
+    request_max: Arc<LimiteDinamico>,
+    // mapa de jobs, guardando o estado de cada job assincrono
     jobs: Mutex<HashMap<String, JobState>>,
-    // sequencial para gerar job_ids unicos; prefixado com `port` para o proxy saber
-    // rotear o /result de volta ao worker dono do job.
+    // atrobio job_id
     job_seq: AtomicU64,
     // porta deste worker, usada como prefixo do job_id.
     port: u16,
 }
 
+//confg de cada modelo
 struct ModelCfg {
     s: usize,
     n: usize,
@@ -104,16 +157,7 @@ fn model_configs() -> Vec<(&'static str, ModelCfg)> {
     ]
 }
 
-// =============================================================================
-//                       carga dos modelos H (.npz scipy)
-// =============================================================================
-//
-// Os arquivos data/H-1.npz e data/H-2.npz vem do matrix_converter.py (scipy
-// sparse, CSR f32). Lemos os 4 arrays internos (format/shape/data/indices/
-// indptr), montamos um sprs::CsMat para validacao de shape e depois convertemos
-// para faer::SparseColMat que e o storage usado no matvec.
-
-/// Parse the raw bytes of a 0-d `|S3` npy file (scipy sparse format field) into a string.
+// funcao para extrair o campo format do npz
 fn parse_npy_s3_string(npy: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
     if npy.len() < 10 || &npy[0..6] != b"\x93NUMPY" {
         return Err("not a valid npy file".into());
@@ -131,7 +175,7 @@ fn parse_npy_s3_string(npy: &[u8]) -> Result<String, Box<dyn std::error::Error>>
     Ok(s)
 }
 
-/// Load a scipy.sparse .npz file as a CSR matrix of f32.
+/// funcao que carrega a matriz
 fn load_scipy_sparse_npz(path: &str) -> Result<CsMat<F>, Box<dyn std::error::Error>> {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -180,9 +224,7 @@ fn load_scipy_sparse_npz(path: &str) -> Result<CsMat<F>, Box<dyn std::error::Err
     Ok(mat)
 }
 
-/// Converte sprs::CsMat (qualquer storage) para faer::SparseColMat (CSC).
-/// CSR de M e equivalente a CSC de M^T; entao convertemos para CSC via sprs
-/// e extraimos col_ptr / row_idx / values para construir o tipo do faer.
+// funcao que carrega a matriz carregado sprs para o formato faer
 fn sprs_to_faer(m: CsMat<F>) -> SparseColMat<usize, F> {
     let m_csc = if m.is_csr() { m.to_other_storage() } else { m };
     let (nrows, ncols) = m_csc.shape();
@@ -193,6 +235,7 @@ fn sprs_to_faer(m: CsMat<F>) -> SparseColMat<usize, F> {
     SparseColMat::new(symbolic, values)
 }
 
+// funcao que chama a funcao de carregamento e conversao, validando a forma da matriz
 fn load_model(name: &str, cfg: &ModelCfg) -> Result<Model, Box<dyn std::error::Error>> {
     let h_sprs = load_scipy_sparse_npz(cfg.path)?;
     if h_sprs.shape() != (cfg.s, cfg.n) {
@@ -206,25 +249,13 @@ fn load_model(name: &str, cfg: &ModelCfg) -> Result<Model, Box<dyn std::error::E
     Ok(Model { h, s: cfg.s, n: cfg.n, shape: cfg.shape })
 }
 
-// =============================================================================
-//                       algoritmos numericos (CGNR / CGNE)
-// =============================================================================
-//
-// Implementacoes batem com server.py: max_iter=10, tol=1e-4. Para no primeiro
-// criterio satisfeito (||r|| < tol OU k == max_iter).
-
-/// Sparse matvec via faer: y = h @ x. h e SparseColMat (CSC).
-///
-/// sparse_dense_matmul tem kernel SIMD vetorizado (com target-cpu=native:
-/// AVX2/AVX-512 + FMA). Par::Seq porque o paralelismo vem das requisicoes
-/// simultaneas (MAX_REQUEST), evitando contencao do thread pool do rayon.
+// essa funcao compuyta o produto H @ p no CGNR . E H @ p e H @ htr no CGNE. Retornando o resultado do produto
 fn par_csr_matvec(h: &SparseColMat<usize, F>, x: &ArrayView1<F>) -> Array1<F> {
     let nrows = h.nrows();
     let ncols = h.ncols();
     let x_slice = x.as_slice().expect("x must be contiguous");
     let x_mat = faer::MatRef::from_column_major_slice(x_slice, ncols, 1);
-    // escreve direto num Vec: evita o pulo Mat -> &slice -> Vec (1 alloc + 1 copia
-    // por matvec); Array1::from(Vec) e O(1), so transfere ownership.
+
     let mut out_vec = vec![0.0_f32; nrows];
     let y_mat = faer::MatMut::from_column_major_slice_mut(&mut out_vec, nrows, 1);
     // Par::Seq: paralelismo vem das MAX_REQUEST=16 requisicoes simultaneas;
@@ -240,13 +271,7 @@ fn par_csr_matvec(h: &SparseColMat<usize, F>, x: &ArrayView1<F>) -> Array1<F> {
     Array1::from(out_vec)
 }
 
-/// y = Hᵀ @ r, computado direto sobre os arrays CSC de H (sem Hᵀ materializado).
-///
-/// H e CSC (s×n): a coluna j guarda as entradas (row_idx[k], vals[k]). Logo
-/// (Hᵀ·r)[j] = Σ_k vals[k]·r[row_idx[k]] — um produto interno por coluna (gather).
-/// O acesso varre col_ptr/row_idx/vals sequencialmente (mesmos arrays que o faer
-/// usa no forward); r tem comprimento s (~200KB em f32, cabe em cache), entao o
-/// gather r[row_idx[k]] e barato. Mesmo custo O(nnz) do antigo ht@r, metade da RAM.
+//serve para calcular o produto da Ht @ r 
 fn ht_matvec(h: &SparseColMat<usize, F>, r: &ArrayView1<F>) -> Array1<F> {
     let (sym, vals) = h.as_ref().parts();
     let col_ptr = sym.col_ptr();
@@ -264,7 +289,7 @@ fn ht_matvec(h: &SparseColMat<usize, F>, r: &ArrayView1<F>) -> Array1<F> {
     Array1::from(out)
 }
 
-/// CGNR: same algorithm as the Python server.
+
 fn cgnr(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>, usize, F) {
     let n = model.n;
     let tol_sq = tol * tol;
@@ -301,7 +326,6 @@ fn cgnr(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>,
     (f, max_iter, r.dot(&r).sqrt())
 }
 
-/// CGNE: matches the Python server implementation.
 fn cgne(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>, usize, F) {
     let n = model.n;
     let tol_sq = tol * tol;
@@ -332,7 +356,7 @@ fn cgne(model: &Model, g: ArrayView1<F>, max_iter: usize, tol: F) -> (Array1<F>,
     (f, max_iter, rtr.sqrt())
 }
 
-/// Min-max normalize in place. Matches Python (img - min) / (max - min).
+/// normaliza para que o range de valores fique [0,1], p evitar que o brilho do sinal afete a escala de cinza
 fn minmax_normalize(v: &mut [F]) {
     let (mut lo, mut hi) = (F::INFINITY, F::NEG_INFINITY);
     for &x in v.iter() {
@@ -347,7 +371,7 @@ fn minmax_normalize(v: &mut [F]) {
     }
 }
 
-/// Run reconstruction by algorithm name. Returns (f_normalized, iters, err).
+/// roda a reconstrucao com o algoritmo escolhido
 fn run_reconstruction(
     model: &Model,
     algorithm: &str,
@@ -359,29 +383,14 @@ fn run_reconstruction(
         other => return Err(format!("algoritmo '{}' nao suportado", other)),
     };
     // normaliza para o absoluto antes da escala de cinza para evitar que o
-    // brilho do sinal afete a escala de cinza da imagem reconstruida (task 2)
+    // brilho do sinal afete a escala de cinza da imagem reconstruida 
     f.mapv_inplace(F::abs);
     minmax_normalize(f.as_slice_mut().unwrap());
     Ok((f, iters, err))
 }
 
-// =============================================================================
-//                  worker HTTP handlers (espelha server.py)
-// =============================================================================
-//
-// Endpoints:
-//   POST /reconstruct/{model_id}?cliente_id=&algorithm=&complete=
-//   GET  /health
-//
-// Politica de admissao identica ao server.py:
-//   - chunks acumulados no DashMap por cliente_id
-//   - complete=True dispara: espera memoria liberar (nao rejeita), adquire
-//     semaforo, executa em thread blocking com timeout, devolve resposta
 
-// Query params do endpoint /reconstruct/{model_id} — bate com o que o cliente
-// Python envia. `model_id` aqui e o mesmo que o `:model_id` do path do URL;
-// ignoramos o duplicado no query string. `cliente_id` e a chave do sticky
-// routing no proxy. `complete=True` no chunk final dispara a reconstrucao.
+// deserializa a request de reconstrucao, validando campos da escolha da requisicao
 #[derive(Deserialize)]
 struct ReconstructQuery {
     cliente_id: String,
@@ -390,8 +399,7 @@ struct ReconstructQuery {
     complete: bool,
 }
 
-// Python's `requests` envia bool como "True"/"False" (com inicial maiuscula);
-// o default do serde so aceita "true"/"false". Aqui aceitamos ambos.
+
 fn deserialize_bool_loose<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where D: serde::Deserializer<'de> {
     use serde::Deserialize;
@@ -412,17 +420,24 @@ fn iso_now() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
 }
 
-/// Memoria disponivel do sistema em GB. Cria um System novo a cada chamada
-/// (refresh_memory e barato). Usado pelo wait-loop de admission control.
+/// Memoria disponivel do sistema em GB. Usa `total - used` em vez de
+/// `available_memory()`: no macOS o sysinfo reporta available ~0 (nao conta
+/// cache reclamavel), enquanto total-used bate com o valor real (e com o psutil).
 fn memoria_disponivel_gb() -> f64 {
     use sysinfo::System;
     let mut sys = System::new();
     sys.refresh_memory();
-    sys.available_memory() as f64 / (1024.0 * 1024.0 * 1024.0)
+    disponivel_gb(&sys)
 }
 
-// Modelo assincrono: o POST valida o request, cria um job, dispara a reconstrucao
-// em background (tokio task) e responde na hora com {job_id}. O cliente consulta o
+/// Memoria disponivel (GB) a partir de um System ja com refresh_memory feito.
+fn disponivel_gb(sys: &sysinfo::System) -> f64 {
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    (sys.total_memory() as f64 - sys.used_memory() as f64).max(0.0) / GB
+}
+
+// funcaq assincrono: o POST valida o request, cria um job, dispara a reconstrucao
+// em background e responde na hora com {job_id}. O cliente consulta o
 // resultado depois em GET /result/{job_id}.
 #[handler]
 async fn reconstruct(
@@ -431,11 +446,10 @@ async fn reconstruct(
     Data(state): Data<&Arc<AppState>>,
     Json(sinal): Json<Sinal>,
 ) -> Response {
-    // sem mais acumulacao por cliente — o cliente envia g completo num unico POST.
+
     let g_arr = Array1::from(sinal.g);
     let algo_choice = params.algorithm.clone();
 
-    // validacoes rapidas: falham na hora (sincronas), sem criar job.
     let model = match state.models.get(&model_id_in_path) {
         Some(m) => m.clone(),
         None => {
@@ -455,7 +469,7 @@ async fn reconstruct(
         })).into_response();
     }
 
-    // cria o job (estado Pending) e dispara o processamento em background.
+    // cria o job e dispara o processamento em background.
     let seq = state.job_seq.fetch_add(1, Ordering::Relaxed);
     let job_id = format!("{}-{}", state.port, seq);
     state.jobs.lock().unwrap().insert(job_id.clone(), JobState::Pending);
@@ -468,7 +482,7 @@ async fn reconstruct(
         state_bg.jobs.lock().unwrap().insert(job_id_bg, resultado);
     });
 
-    // responde imediatamente — a conexao do POST nao fica presa ate a reconstrucao.
+    // responde imediatamente a conexao do POST nao fica presa ate a reconstrucao.
     (
         StatusCode::ACCEPTED,
         Json(json!({ "status": "pending", "job_id": job_id })),
@@ -476,8 +490,6 @@ async fn reconstruct(
 }
 
 // Executa a reconstrucao de um job em background e devolve o JobState::Ready final
-// (corpo JSON ja serializado + status HTTP). Aplica a mesma politica de admissao
-// (espera memoria, semaforo, timeout) que a versao sincrona usava.
 async fn processar_reconstrucao(
     state: &Arc<AppState>,
     model: &Arc<Model>,
@@ -485,9 +497,7 @@ async fn processar_reconstrucao(
     algo_choice: &str,
     g_arr: Array1<F>,
 ) -> JobState {
-    // admission control por pressao de memoria: nao rejeita por padrao, espera
-    // ate a memoria aliviar. so rejeita em ultimo caso, depois de TEMPO_DE_ESPERA
-    // (protecao contra deadlock em OOM real). matching server.py.
+    // verifica se ha memoria disponivel, se nao aguarda por 5 minutos a memoria ser liberada
     if memoria_disponivel_gb() < MEMO_MINIMA {
         let deadline = std::time::Instant::now()
             + std::time::Duration::from_secs(TEMPO_DE_ESPERA);
@@ -508,13 +518,11 @@ async fn processar_reconstrucao(
         }
     }
 
-    // admission control: limita reconstrucoes simultaneas a 2*cpu (mesma logica do Python).
-    let _permit = state.request_max.clone().acquire_owned().await.unwrap();
+    let _permit = state.request_max.acquire().await;
 
     let start_dt = iso_now();
     let t0 = std::time::Instant::now();
 
-    // clona o Arc para que possamos acessar model.shape apos o spawn_blocking
     let model_for_task = model.clone();
     let algo = algo_choice.to_string();
     let result = tokio::time::timeout(
@@ -585,9 +593,8 @@ async fn processar_reconstrucao(
     JobState::Ready { status_code: StatusCode::OK.as_u16(), body: buf }
 }
 
-// GET /result/{job_id}: devolve o estado do job. Pending => 200 {"status":"pending"};
-// pronto => o corpo final (com a imagem ou o erro) e o job e removido do mapa;
-// inexistente => 404. So um fetch terminal consome o job.
+// GET /result/{job_id}: devolve o estado do job. se tiver pendente, ele devolve status pendente, se tiver pronto, ele retorna a imagem, se for 
+// inexistente, ele da erro
 #[handler]
 async fn job_result(Path(job_id): Path<String>, Data(state): Data<&Arc<AppState>>) -> Response {
     let mut jobs = state.jobs.lock().unwrap();
@@ -610,6 +617,7 @@ async fn job_result(Path(job_id): Path<String>, Data(state): Data<&Arc<AppState>
         unreachable!("job verificado como Ready acima");
     };
     drop(jobs);
+    // retorna a mensagem 
     Response::builder()
         .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK))
         .header("content-type", "application/json")
@@ -621,47 +629,218 @@ async fn health(Data(state): Data<&Arc<AppState>>) -> Json<serde_json::Value> {
     Json(json!({"status": "ok", "models": state.models.keys().collect::<Vec<_>>()}))
 }
 
-/// Monitor de memoria — roda so no proxy, imprimindo 1 linha/s.
-/// `app_pids`: PIDs do proxy + todos os workers; o "uso da app" e a soma dos RSS.
-/// Workers nao rodam esse monitor para evitar N linhas por segundo no terminal.
-fn spawn_memory_monitor(app_pids: Vec<u32>) {
+/// Uma amostra de uso de recursos num instante (1 por segundo).
+#[derive(Clone, Copy)]
+struct Amostra {
+    t_s: f64,
+    cpu_app: f32,      // % somado da arvore (pode passar de 100 com varios cores)
+    rss_app_gb: f64,
+    cpu_sys: f32,      // % medio do sistema (0-100)
+    mem_avail_gb: f64,
+}
+
+/// Monitor de recursos — roda so no proxy. A cada 1s amostra CPU% e RSS da arvore
+/// (proxy + workers), grava recursos_rust_server.csv e acumula as amostras em
+/// `samples` para o grafico ser gerado no shutdown.
+fn spawn_resource_monitor(app_pids: Vec<u32>, samples: Arc<Mutex<Vec<Amostra>>>) {
     tokio::spawn(async move {
         use sysinfo::{System, Pid, ProcessesToUpdate};
+        use std::io::Write;
+        const GB: f64 = 1024.0 * 1024.0 * 1024.0;
         let mut sys = System::new_all();
         let pids: Vec<Pid> = app_pids.iter().map(|&p| Pid::from_u32(p)).collect();
-        const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+        let mut csv = match std::fs::File::create("recursos_rust_server.csv") {
+            Ok(f) => std::io::BufWriter::new(f),
+            Err(e) => { eprintln!("[recursos] nao consegui criar CSV: {e}"); return; }
+        };
+        let _ = writeln!(csv, "t_s,cpu_app_pct,rss_app_gb,cpu_sys_pct,mem_used_gb,mem_avail_gb,n_procs");
+
+        // 1a passada so fixa baseline de CPU (sysinfo precisa de 2 refreshes p/ %)
+        sys.refresh_cpu_all();
+        sys.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+        let t0 = std::time::Instant::now();
         loop {
-            sys.refresh_memory();
-            sys.refresh_processes(ProcessesToUpdate::Some(&pids), true);
-            let rss_total: u64 = pids.iter()
-                .filter_map(|p| sys.process(*p).map(|proc_| proc_.memory()))
-                .sum();
-            let total = sys.total_memory() as f64 / GB;
-            let used = sys.used_memory() as f64 / GB;
-            let avail = sys.available_memory() as f64 / GB;
-            let pct = (used / total) * 100.0;
-            let now = chrono::Local::now().format("%H:%M:%S");
-            println!(
-                "[memoria {}] sistema usada={:.2}GB disponivel={:.2}GB / total={:.2}GB ({:.1}%) | uso da app ={:.2}GB",
-                now, used, avail, total, pct, rss_total as f64 / GB
-            );
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            sys.refresh_memory();
+            sys.refresh_cpu_all();
+            sys.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+
+            let rss_total: u64 = pids.iter()
+                .filter_map(|p| sys.process(*p).map(|pr| pr.memory()))
+                .sum();
+            let n_procs = pids.iter().filter(|p| sys.process(**p).is_some()).count();
+            let cpu_app: f32 = pids.iter()
+                .filter_map(|p| sys.process(*p).map(|pr| pr.cpu_usage()))
+                .sum();
+            let cpu_sys = sys.global_cpu_usage();
+            let used = sys.used_memory() as f64 / GB;
+            // total-used: available_memory() reporta ~0 no macOS (ver disponivel_gb)
+            let avail = disponivel_gb(&sys);
+            let rss_app_gb = rss_total as f64 / GB;
+            let t_s = t0.elapsed().as_secs_f64();
+
+            let _ = writeln!(csv, "{:.1},{:.1},{:.3},{:.1},{:.3},{:.3},{}",
+                t_s, cpu_app, rss_app_gb, cpu_sys, used, avail, n_procs);
+            let _ = csv.flush();
+
+            let now = chrono::Local::now().format("%H:%M:%S");
+            println!("[recursos {}] cpu_app={:.0}% rss_app={:.2}GB cpu_sys={:.0}% disponivel={:.2}GB",
+                now, cpu_app, rss_app_gb, cpu_sys, avail);
+
+            samples.lock().unwrap().push(Amostra {
+                t_s, cpu_app, rss_app_gb, cpu_sys, mem_avail_gb: avail,
+            });
         }
     });
 }
 
-// =============================================================================
-//                                   worker
-// =============================================================================
-//
-// Cada worker carrega os modelos H-1.npz/H-2.npz e expoe /reconstruct/{model_id}
-// e /health. Estado dos chunks por cliente fica local (sticky routing no proxy
-// garante que o mesmo cliente_id sempre cai aqui).
+/// Ajusta o limite de reconstrucoes simultaneas (LimiteDinamico) em tempo real,
+/// a cada 1s, conforme a MEMORIA DISPONIVEL — nao a CPU%: a reconstrucao e
+/// CPU-bound (cada uma ~1 core, memoria desprezivel), entao CPU alta e DESEJAVEL.
+/// O que pode travar a maquina e swap, entao reagimos ao sinal honesto (RAM livre,
+/// via total-used). Normalmente fica no teto (cores ocupados); so reduz quando a
+/// RAM aperta. Roda em cada worker.
+fn spawn_monitor_concorrencia(limite: Arc<LimiteDinamico>, max_request: usize) {
+    tokio::spawn(async move {
+        use sysinfo::System;
+        const RAM_FOLGA_GB: f64 = 1.5;    // acima disso: teto cheio
+        const RAM_CRITICA_GB: f64 = 0.5;  // abaixo disso: minimo
+        let mut sys = System::new();
+        let mut anterior: Option<usize> = None;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            sys.refresh_memory();
+            let disp = disponivel_gb(&sys);
+            let novo = if disp >= RAM_FOLGA_GB {
+                max_request
+            } else if disp <= RAM_CRITICA_GB {
+                1
+            } else {
+                let r = (disp - RAM_CRITICA_GB) / (RAM_FOLGA_GB - RAM_CRITICA_GB);
+                1 + (r * (max_request - 1) as f64) as usize
+            };
+            let novo = novo.clamp(1, max_request);
+            if Some(novo) != anterior {
+                limite.set_maximo(novo);
+                println!(
+                    "[concorrencia] disponivel={disp:.2}GB -> limite={novo}/{max_request} (em_execucao={})",
+                    limite.em_execucao()
+                );
+                anterior = Some(novo);
+            }
+        }
+    });
+}
 
-/// Roda um worker na porta `port` com `max_request` reconstrucoes simultaneas.
+/// Aguarda SIGINT (Ctrl-C) ou SIGTERM (como o comparativo.py mata o server).
+async fn aguardar_sinal_termino() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("sigterm");
+        let mut sigint = signal(SignalKind::interrupt()).expect("sigint");
+        tokio::select! {
+            _ = sigterm.recv() => {}
+            _ = sigint.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    { let _ = tokio::signal::ctrl_c().await; }
+}
+
+/// Desenha um painel (linha temporal) no SVG: eixos, grid, ticks Y e as series.
+fn desenhar_painel(
+    svg: &mut String, ml: f64, w: f64, mr: f64, y0: f64, y1: f64,
+    titulo: &str, ts: &[f64], t_max: f64, series: &[(&str, &str, Vec<f64>)],
+) {
+    let plot_w = w - ml - mr;
+    let x_of = |t: f64| ml + (t / t_max) * plot_w;
+    let mut ymax = 0.0_f64;
+    for (_, _, vs) in series { for &v in vs { ymax = ymax.max(v); } }
+    if ymax <= 0.0 { ymax = 1.0; }
+    ymax *= 1.1;
+    let y_of = |v: f64| y1 - (v / ymax) * (y1 - y0);
+    // precisao dos rotulos do eixo Y: escalas pequenas (GB) precisam de decimais;
+    // escalas grandes (CPU%) ficam melhores como inteiro.
+    let casas = if ymax < 10.0 { 2 } else { 0 };
+
+    // eixos
+    svg.push_str(&format!(r#"<line x1="{ml}" y1="{y0}" x2="{ml}" y2="{y1}" stroke="black"/>"#));
+    svg.push_str(&format!(r#"<line x1="{ml}" y1="{y1}" x2="{:.0}" y2="{y1}" stroke="black"/>"#, w - mr));
+    // grid + ticks Y
+    for i in 0..=5 {
+        let v = ymax * (i as f64) / 5.0;
+        let y = y_of(v);
+        svg.push_str(&format!(r##"<line x1="{ml}" y1="{y:.1}" x2="{:.0}" y2="{y:.1}" stroke="#dddddd"/>"##, w - mr));
+        svg.push_str(&format!(r#"<text x="{:.0}" y="{:.1}" text-anchor="end">{:.*}</text>"#, ml - 6.0, y + 4.0, casas, v));
+    }
+    svg.push_str(&format!(r#"<text x="{ml}" y="{:.0}" font-weight="bold">{titulo}</text>"#, y0 - 8.0));
+
+    // series + legenda
+    let mut lx = w - mr - (series.len() as f64) * 130.0;
+    for (nome, cor, vs) in series {
+        let mut pts = String::with_capacity(vs.len() * 14);
+        for (i, &v) in vs.iter().enumerate() {
+            pts.push_str(&format!("{:.1},{:.1} ", x_of(ts[i]), y_of(v)));
+        }
+        svg.push_str(&format!(r#"<polyline points="{pts}" fill="none" stroke="{cor}" stroke-width="1.5"/>"#));
+        svg.push_str(&format!(r#"<rect x="{lx:.0}" y="{:.0}" width="11" height="11" fill="{cor}"/>"#, y0 - 12.0));
+        svg.push_str(&format!(r#"<text x="{:.0}" y="{:.0}">{nome}</text>"#, lx + 15.0, y0 - 3.0));
+        lx += 130.0;
+    }
+}
+
+/// Gera um grafico SVG (sem dependencias externas) com dois paineis — CPU% e
+/// memoria (GB) ao longo do tempo. SVG e arquivo de imagem que abre em qualquer
+/// navegador; escolhido para nao adicionar crate de plotagem (e download) ao build.
+fn gerar_grafico_recursos(amostras: &[Amostra], path: &str) {
+    use std::io::Write;
+    if amostras.is_empty() {
+        eprintln!("[recursos] sem amostras, grafico nao gerado");
+        return;
+    }
+    let (w, h, ml, mr) = (1000.0_f64, 720.0_f64, 70.0_f64, 30.0_f64);
+    let t_max = amostras.last().unwrap().t_s.max(1.0);
+    let ts: Vec<f64> = amostras.iter().map(|a| a.t_s).collect();
+
+    let mut svg = String::with_capacity(amostras.len() * 64 + 4096);
+    svg.push_str(&format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" font-family="monospace" font-size="12">"#
+    ));
+    svg.push_str(&format!(r#"<rect width="{w}" height="{h}" fill="white"/>"#));
+    svg.push_str(&format!(r#"<text x="{:.0}" y="22" font-weight="bold" font-size="15">Uso de recursos - server Rust</text>"#, ml));
+
+    // painel CPU (topo)
+    desenhar_painel(&mut svg, ml, w, mr, 70.0, 340.0, "CPU (%)", &ts, t_max, &[
+        ("CPU app (%)", "#1f77b4", amostras.iter().map(|a| a.cpu_app as f64).collect()),
+        ("CPU sistema (%)", "#ff7f0e", amostras.iter().map(|a| a.cpu_sys as f64).collect()),
+    ]);
+    // painel memoria (baixo)
+    desenhar_painel(&mut svg, ml, w, mr, 410.0, 680.0, "Memoria (GB)", &ts, t_max, &[
+        ("RSS app (GB)", "#d62728", amostras.iter().map(|a| a.rss_app_gb).collect()),
+        ("RAM disponivel (GB)", "#2ca02c", amostras.iter().map(|a| a.mem_avail_gb).collect()),
+    ]);
+    svg.push_str(&format!(r#"<text x="{:.0}" y="705" text-anchor="middle">tempo (s) — 0 a {t_max:.0}</text>"#, w / 2.0));
+    svg.push_str("</svg>");
+
+    match std::fs::File::create(path) {
+        Ok(mut f) => {
+            let _ = f.write_all(svg.as_bytes());
+            println!("[recursos] salvo: recursos_rust_server.csv + {path}");
+        }
+        Err(e) => eprintln!("[recursos] nao consegui salvar grafico: {e}"),
+    }
+}
+
+
+// Cada worker carrega os modelos H-1.npz/H-2.npz e expoe /reconstruct/{model_id}
+// e /health. 
+
 async fn run_worker(port: u16, max_request: usize) -> Result<(), std::io::Error> {
     let mut models = HashMap::new();
     for (name, cfg) in model_configs() {
+        // carrega os odelos
         match load_model(name, &cfg) {
             Ok(m) => { models.insert(name.to_string(), Arc::new(m)); }
             Err(e) => eprintln!("failed to load {}: {}", name, e),
@@ -670,13 +849,18 @@ async fn run_worker(port: u16, max_request: usize) -> Result<(), std::io::Error>
 
     #[allow(non_snake_case)]
     let MAX_REQUEST = max_request;
+
+    //config do worker
     let state = Arc::new(AppState {
         models,
-        request_max: Arc::new(Semaphore::new(MAX_REQUEST)),
+        request_max: Arc::new(LimiteDinamico::new(MAX_REQUEST)),
         jobs: Mutex::new(HashMap::new()),
         job_seq: AtomicU64::new(0),
         port,
     });
+
+    // ajusta o limite de reconstrucoes simultaneas em runtime conforme a carga
+    spawn_monitor_concorrencia(state.request_max.clone(), MAX_REQUEST);
 
     // o monitor de memoria roda no proxy (1 linha agregada por segundo).
 
@@ -692,17 +876,11 @@ async fn run_worker(port: u16, max_request: usize) -> Result<(), std::io::Error>
     Server::new(TcpListener::bind(format!("0.0.0.0:{port}"))).run(app).await
 }
 
-// =============================================================================
-//             proxy: load balancer com sticky routing por cliente_id
-// =============================================================================
-//
-// Recebe todas as requisicoes externas em 8000 e encaminha para o worker
-// determinado por hash(cliente_id) % N_WORKERS. Como o mesmo cliente sempre
-// Cada request agora carrega o sinal completo num unico POST — sem estado por
-// cliente_id, qualquer worker pode servir qualquer request. Trocamos sticky
-// routing por round-robin atomico (distribuicao perfeitamente uniforme com
-// overhead minimo).
+// implementamos o load balancer
+// realizamos o round robin para distribuir a carga entre os workers
+// e utilizamos um job_id com prefixo na porta do worker para indicar qual worker está atribuído a ele
 
+// o proxy roteia as requisicoes de reconstrucao para os workers 
 struct ProxyState {
     worker_ports: Vec<u16>,
     rr_counter: std::sync::atomic::AtomicUsize,
@@ -717,7 +895,7 @@ async fn proxy_reconstruct(
     body: bytes::Bytes,
 ) -> Response {
     // round-robin: contador atomico mod N. Distribuicao uniforme entre workers,
-    // sem fingerprint do cliente_id (que nao e mais necessario para estado).
+
     let idx = state.rr_counter
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         % state.worker_ports.len();
@@ -825,9 +1003,11 @@ async fn run_proxy(proxy_port: u16, n_workers: usize) -> Result<(), std::io::Err
     let exe = std::env::current_exe()?;
     let mut children: Vec<std::process::Child> = Vec::with_capacity(n_workers);
 
-    // divide capacidade de CPU entre os workers para evitar oversubscription:
-    // total = 2*cpu_count concurrent reqs no agregado (mesmo teto do single).
-    let per_worker_max = ((num_cpus::get() * 2) / n_workers).max(1);
+    // concorrencia TOTAL alvo = nucleos * 1.5 (folga p/ esconder latencia),
+    // DIVIDIDA entre os workers -> evita oversubscription. Ex: 8 nucleos, 2
+    // workers -> total 12, 6 por worker.
+    let per_worker_max =
+        (((num_cpus::get() as f32 * 1.5) / n_workers as f32).round() as usize).max(1);
     println!(
         "[proxy] iniciando {n_workers} workers nas portas {worker_ports:?} (max_request/worker={per_worker_max})"
     );
@@ -836,12 +1016,12 @@ async fn run_proxy(proxy_port: u16, n_workers: usize) -> Result<(), std::io::Err
         cmd.arg("--worker")
             .arg("--port").arg(p.to_string())
             .arg("--max-request").arg(per_worker_max.to_string());
-        // herda stdout/stderr para os logs aparecerem no mesmo terminal
+
         let child = cmd.spawn().expect("falha ao spawnar worker");
         children.push(child);
     }
 
-    // espera todos os workers responderem /health (carregam modelos antes)
+    // espera todos os workers responderem /health 
     for &p in &worker_ports {
         if !wait_for_health(p, 60).await {
             eprintln!("[proxy] worker {p} nao subiu em 60s");
@@ -849,35 +1029,40 @@ async fn run_proxy(proxy_port: u16, n_workers: usize) -> Result<(), std::io::Err
     }
     println!("[proxy] {n_workers} workers prontos");
 
-    // 1 linha de memoria por segundo, agregando proxy + workers
+    // monitor de recursos (CPU+memoria) da arvore toda, gravando CSV a cada 1s
     let mut app_pids: Vec<u32> = children.iter().map(|c| c.id()).collect();
     app_pids.push(std::process::id());
-    spawn_memory_monitor(app_pids.clone());
+    let samples: Arc<Mutex<Vec<Amostra>>> = Arc::new(Mutex::new(Vec::new()));
+    spawn_resource_monitor(app_pids.clone(), samples.clone());
 
-    // handler de Ctrl-C: matar todos os filhos antes de sair
+    // ao receber sinal de termino: gera o grafico ANTES de matar os workers
+    let samples_sig = samples.clone();
     let mut kids_for_signal: Vec<u32> = children.iter().map(|c| c.id()).collect();
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        eprintln!("\n[proxy] Ctrl-C recebido, encerrando workers...");
+        aguardar_sinal_termino().await;
+        eprintln!("\n[proxy] sinal de termino recebido, gerando grafico de recursos...");
+        gerar_grafico_recursos(&samples_sig.lock().unwrap(), "recursos_rust_server.svg");
+        eprintln!("[proxy] encerrando workers...");
         for pid in kids_for_signal.drain(..) {
             kill_pid(pid);
         }
         std::process::exit(0);
     });
 
-    // timeout amplo: sob carga, requests aguardam na fila do semaforo do worker.
-    // 60s era curto demais sob 900 requests simultaneos / 4 inflight por worker.
+    // configuramos o request com pool de conexoes
     let http = reqwest::Client::builder()
         .pool_max_idle_per_host(128)
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .expect("build reqwest client");
-
+    // estado do proxy
     let state = Arc::new(ProxyState {
         worker_ports: worker_ports.clone(),
         rr_counter: std::sync::atomic::AtomicUsize::new(0),
         http,
     });
+    // roteamento do proxy, o proxy recebe as requisicoes e distribui para osworkers.
+    // com o id do job prefixado com a porta do worker, o cliente sempre consulta o resultado no mesmo worker
     let app = Route::new()
         .at("/reconstruct/:model_id", post(proxy_reconstruct))
         .at("/result/:job_id", poem::get(proxy_result))
@@ -887,7 +1072,8 @@ async fn run_proxy(proxy_port: u16, n_workers: usize) -> Result<(), std::io::Err
     println!("[proxy] escutando em http://0.0.0.0:{proxy_port} (sticky routing por cliente_id)");
     let result = Server::new(TcpListener::bind(format!("0.0.0.0:{proxy_port}"))).run(app).await;
 
-    // cleanup: mata filhos ao sair normalmente
+    // saida normal (erro no server): gera o grafico antes de matar os filhos
+    gerar_grafico_recursos(&samples.lock().unwrap(), "recursos_rust_server.svg");
     for mut c in children {
         let _ = c.kill();
         let _ = c.wait();
@@ -909,18 +1095,7 @@ fn kill_pid(pid: u32) {
         .output();
 }
 
-// =============================================================================
-//                          entry point + CLI parsing
-// =============================================================================
-//
-// Modos:
-//   sem flags       → proxy: spawna N workers em 8001+ e roteia por cliente_id
-//   --worker --port → worker interno; usado pelo proxy ao criar child processes
-//
-// Flags opcionais:
-//   --port N        → porta do proxy (default 8000) ou do worker
-//   --workers N     → numero de workers a spawnar (default cpu_count/2)
-//   --max-request N → reconstrucoes simultaneas no worker (default 2*cpu_count)
+
 
 fn parse_arg<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
     args.iter().position(|a| a == flag)
@@ -928,19 +1103,47 @@ fn parse_arg<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
         .and_then(|v| v.parse().ok())
 }
 
+/// Calcula o numero de workers escalando com os DOIS recursos da maquina:
+/// workers = min(teto_cpu, teto_ram). Maquina mais forte (mais nucleos/RAM) sobe
+/// os dois tetos -> mais workers; mais fraca -> menos. O teto de RAM evita
+/// saturar/swappar (cada worker carrega ~0.9GB fixo de modelos). Usa RAM
+/// disponivel (total-used), entao tambem adapta ao que ja roda na maquina.
+/// O Rust tem 1 unico proxy (o processo principal), so workers e dinamico.
+fn calcular_workers() -> usize {
+    use sysinfo::System;
+    const RAM_POR_WORKER_GB: f64 = 0.9;
+    const MARGEM_GB: f64 = 1.0;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let disp_gb = disponivel_gb(&sys);
+    let cpu = num_cpus::get();
+
+    let teto_cpu = (cpu / 2).max(2);
+    let teto_ram = (((disp_gb - MARGEM_GB) / RAM_POR_WORKER_GB) as i64).max(1) as usize;
+    let n = teto_cpu.min(teto_ram);
+    println!(
+        "[proxy] topologia: cpu={cpu} disponivel={disp_gb:.1}GB -> workers={n} (teto_cpu={teto_cpu}, teto_ram={teto_ram})"
+    );
+    n
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), std::io::Error> {
+    // inicializa os argumentos e passa eles para rodar como proxy ou worker.
+    // proxy cria workers e distribui as requsicoes entre eles
+    // enquanto worker carrega modleso e processa as requsicioes de construcao
     let args: Vec<String> = std::env::args().collect();
     let is_worker = args.iter().any(|a| a == "--worker");
     let port: u16 = parse_arg(&args, "--port").unwrap_or(8000);
-    let n_workers: usize = parse_arg(&args, "--workers")
-        .unwrap_or((num_cpus::get() / 2).max(2));
     let max_request: usize = parse_arg(&args, "--max-request")
         .unwrap_or((num_cpus::get() * 2).max(2));
 
     if is_worker {
         run_worker(port, max_request).await
     } else {
+        // sem --workers: calcula dinamicamente com base em CPU + RAM disponivel
+        // (so no proxy; os workers nao recalculam)
+        let n_workers: usize = parse_arg(&args, "--workers").unwrap_or_else(calcular_workers);
         run_proxy(port, n_workers).await
     }
 }

@@ -37,7 +37,7 @@ FATOR_CONCORRENCIA = 1.5
 _N_WORKERS = max(1, int(os.environ.get("N_WORKERS", "1")))  # setado pelo supervisor
 # calcula o limite de requisições simultâneas com base no número de CPUs e no fator de concorrência
 MAX_REQUEST = max(1, round((os.cpu_count() or 4) * FATOR_CONCORRENCIA / _N_WORKERS))
-MEMO_MINIMA = 0.05  # piso abaixo do qual o request espera
+MEMO_MINIMA = 0.5  # piso abaixo do qual o request espera
 TEMPO_DE_ESPERA = 300  # so rejeita em ultimo caso, depois de 5 min esperando
 
 # frequencia de re-checagem da memoria
@@ -570,8 +570,7 @@ class MonitorRecursos:
     para analisar o uso de CPU/memoria ao longo da vida do servidor.
 
     Roda numa thread daemon. stop() sinaliza, espera a thread fechar o CSV e entao
-    gera o grafico na thread principal (matplotlib Agg) — feito ANTES de matar os
-    workers, com o server ainda no ar."""
+    gera o grafico na thread principal (matplotlib Agg)"""
 
     def __init__(
         self,
@@ -678,15 +677,17 @@ class MonitorRecursos:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
+
+        n_cores = os.cpu_count() or 1
         ts = [a[0] for a in self._amostras]
         cpu_app = [a[1] for a in self._amostras]
         rss_app = [a[2] for a in self._amostras]
-        cpu_sys = [a[3] for a in self._amostras]
+        cpu_sys = [a[3] * n_cores for a in self._amostras]
         mem_avail = [a[5] for a in self._amostras]
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
         ax1.plot(ts, cpu_app, color="tab:blue", label="CPU app (%)")
         ax1.plot(ts, cpu_sys, color="tab:orange", alpha=0.5, label="CPU sistema (%)")
-        ax1.set_ylabel("CPU (%)")
+        ax1.set_ylabel("CPU (%) — 100% = 1 núcleo")
         ax1.set_title("Uso de recursos - server Python")
         ax1.legend(loc="upper right")
         ax1.grid(True, alpha=0.3)
@@ -900,7 +901,7 @@ async def health():
 
 
 # quantidade minima de workers
-MIN_WORKERS = 1
+MIN_WORKERS = 2
 # cada worker consome ~0.9GB de RAM, entao o supervisor calcula quantos workers cabem na memoria disponivel, com uma margem de 1GB para o SO e proxies.
 RAM_POR_WORKER_GB = 0.9
 # margem de memoria para o SO e proxies, para evitar saturar a memoria
@@ -921,7 +922,7 @@ def calcular_topologia() -> tuple[int, int]:
     # teto por RAM: cada worker consome ~0.9GB, entao calcula quantos workers cabem na memoria disponivel, com uma margem de 1GB para o SO e proxies.
     teto_ram = max(1, int((disp_gb - MARGEM_GB) / RAM_POR_WORKER_GB))
     #
-    n_workers = min(teto_cpu, teto_ram)
+    n_workers = max(MIN_WORKERS, min(teto_cpu, teto_ram))
 
     # proxies sao leves (so encaminham, nao carregam modelo): bound por CPU, com teto.
     n_proxies = max(1, min(cpu // 2, 4))

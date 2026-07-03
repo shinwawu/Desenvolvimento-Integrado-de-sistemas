@@ -423,11 +423,7 @@ fn memoria_disponivel_gb() -> f64 {
     disponivel_gb(&sys)
 }
 
-/// memoria disponivel a partir de um system ja com refresh_memory feito.
-/// Usa available_memory() para casar com o server Python
-/// (psutil.virtual_memory().available): memoria alocavel sem swap, ja descontando
-/// cache reclamavel. Cai para total-used so se available vier 0 (sysinfo antigo
-/// reportava ~0 no macOS; em 0.32 ja retorna valor real nas 3 plataformas).
+/// memoria disponivel a partir de um system ja com refresh_memory feito
 fn disponivel_gb(sys: &sysinfo::System) -> f64 {
     const GB: f64 = 1024.0 * 1024.0 * 1024.0;
     let bytes = match sys.available_memory() {
@@ -803,10 +799,11 @@ fn gerar_grafico_recursos(amostras: &[Amostra], path: &str) {
     svg.push_str(&format!(r#"<rect width="{w}" height="{h}" fill="white"/>"#));
     svg.push_str(&format!(r#"<text x="{:.0}" y="22" font-weight="bold" font-size="15">Uso de recursos - server Rust</text>"#, ml));
 
-    // painel CPU (topo)
-    desenhar_painel(&mut svg, ml, w, mr, 70.0, 340.0, "CPU (%)", &ts, t_max, &[
+    // painel cpu (cima)
+    let n_cores = num_cpus::get() as f64;
+    desenhar_painel(&mut svg, ml, w, mr, 70.0, 340.0, "CPU (%) ", &ts, t_max, &[
         ("CPU app (%)", "#1f77b4", amostras.iter().map(|a| a.cpu_app as f64).collect()),
-        ("CPU sistema (%)", "#ff7f0e", amostras.iter().map(|a| a.cpu_sys as f64).collect()),
+        ("CPU sistema (%)", "#ff7f0e", amostras.iter().map(|a| a.cpu_sys as f64 * n_cores).collect()),
     ]);
     // painel memoria (baixo)
     desenhar_painel(&mut svg, ml, w, mr, 410.0, 680.0, "Memoria (GB)", &ts, t_max, &[
@@ -1097,7 +1094,8 @@ fn parse_arg<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
 /// workers = min(teto_cpu, teto_ram). 
 fn calcular_workers() -> usize {
     use sysinfo::System;
-    const RAM_POR_WORKER_GB: f64 = 0.8;
+    const MIN_WORKERS: usize = 2;
+    const RAM_POR_WORKER_GB: f64 = 0.9;
     const MARGEM_GB: f64 = 1.0;
     let mut sys = System::new();
     sys.refresh_memory();
@@ -1106,7 +1104,7 @@ fn calcular_workers() -> usize {
 
     let teto_cpu = (cpu / 2).max(2);
     let teto_ram = (((disp_gb - MARGEM_GB) / RAM_POR_WORKER_GB) as i64).max(1) as usize;
-    let n = teto_cpu.min(teto_ram);
+    let n = teto_cpu.min(teto_ram).max(MIN_WORKERS);
     println!(
         "[proxy] topologia: cpu={cpu} disponivel={disp_gb:.1}GB -> workers={n} (teto_cpu={teto_cpu}, teto_ram={teto_ram})"
     );
